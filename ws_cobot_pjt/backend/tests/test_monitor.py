@@ -83,7 +83,8 @@ def test_upload_generation_version_and_inspection(client):
     inspection=c.post('/api/operator/inspections',json={'run_id':rid,'verdict':'HOLD','reason':'모의 결과 확인'})
     assert inspection.status_code==201,inspection.text
     assert c.get(f'/api/operator/runs/{rid}').json()['inspections'][0]['verdict']=='HOLD'
-    assert len(c.get('/api/operator/runs').json())==1
+    listed=c.get('/api/operator/runs').json()
+    assert len(listed)==1 and listed[0]['inspections'][0]['verdict']=='HOLD'
     assert c.post('/api/operator/path-generations',json=body).json()['result']['path_id']==p['path_id']
     assert c.post('/api/operator/path-generations',json={**body,'width_mm':60}).status_code==409
 
@@ -101,6 +102,50 @@ def test_rejections_and_failed_path_never_runs(client):
     assert g['state']=='FAILED' and 'path_id' not in g['result']
     with sqlite3.connect(c.app.state.store.db_path) as db:
         assert db.execute('SELECT count(*) FROM path_versions').fetchone()[0]==1
+
+
+def test_invalid_input_reports_code_field_and_constraint(client):
+    response = client.post('/api/operator/runs', json={
+        'schema_version': 2,
+        'request_id': str(uuid4()),
+        'source_mode': 'SIMULATION',
+        'path_id': str(uuid4()),
+        'path_version': 0,
+        'path_sha256': 'bad',
+        'operator_confirmed_fixture': False,
+    })
+    assert response.status_code == 422
+    body = response.json()
+    assert body['error_code'] == 'INVALID_INPUT'
+    assert any(item['field'] == 'path_version' for item in body['details'])
+    assert any(item['field'] == 'path_sha256' for item in body['details'])
+    assert 'path_version' in body['message']
+
+
+def test_alarm_clear_updates_active_lifecycle_and_order(client):
+    store = client.app.state.store
+    raised = dict(event_id=str(uuid4()), schema_version=2, source_mode='SIMULATION',
+                  source_epoch='test', event_seq=1, run_id='run-a',
+                  occurred_at='2026-09-27T01:00:00+00:00', event_type='ALARM_RAISED',
+                  severity='ERROR', code='IK_FAILED', message='IK 실패', phase='PRECHECK',
+                  path_id='path-a', path_version=1, path_sha256='a' * 64,
+                  profile_snapshot_id='profile-a', profile_sha256='b' * 64,
+                  tool_id='engraving_drill')
+    other = {**raised, 'event_id': str(uuid4()), 'run_id': 'run-b',
+             'occurred_at': '2026-09-27T01:01:00+00:00', 'code': 'FORCE_LIMIT',
+             'message': '힘 한계'}
+    store.event(raised)
+    store.event(other)
+    store.event({**raised, 'event_id': str(uuid4()), 'event_seq': 2, 'run_id': 'run-recheck',
+                 'occurred_at': '2026-09-27T01:02:00+00:00',
+                 'event_type': 'ALARM_CLEARED', 'severity': 'INFO',
+                 'message': '동일 경로 사전검사 재통과'})
+    alarms = client.get('/api/operator/alarms').json()
+    assert alarms[0]['run_id'] == 'run-b' and alarms[0]['active'] is True
+    cleared = next(alarm for alarm in alarms if alarm['run_id'] == 'run-a')
+    assert cleared['active'] is False
+    assert cleared['cleared_at'] == '2026-09-27T01:02:00+00:00'
+    assert cleared['clear_message'] == '동일 경로 사전검사 재통과'
 
 
 def test_stop_preempts_db_lock_and_never_advances(client):
