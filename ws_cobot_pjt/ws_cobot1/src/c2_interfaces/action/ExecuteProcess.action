@@ -26,8 +26,10 @@ string last_completed_segment_id
 string log_id
 ---
 string run_id
-# PRECHECK, TOOL_CHECK, APPROACH, ENGRAVE, RETRACT, FINISH
-# TOOL_CHECK: 기존 보정의 1점 확인. 재보정 필요 시 중단하고 새 경로를 준비한다.
+# entry 활성 prepared 정상 흐름: PRECHECK, ENTRY, ENGRAVE, RETURN_HOME, FINISH.
+# entry 비활성 prepared 흐름은 ENTRY/RETURN_HOME을 생략할 수 있다.
+# 직접 실행 호환 흐름에서는 TOOL_CHECK, APPROACH, RETRACT가 사용될 수 있다.
+# RETURN_HOME은 정상 성공 경로의 검사된 계획이며 실패·정지 뒤 자동 복귀가 아니다.
 string phase
 # 완료를 확인한 CUT 길이 / 전체 CUT 길이, 0..1. 공정 성공·실물 검사와 별개.
 float64 engraving_progress
