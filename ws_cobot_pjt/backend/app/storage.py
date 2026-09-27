@@ -241,6 +241,26 @@ class Storage:
                       (event['event_id'], event.get('run_id'), event['event_type'], event['occurred_at'], encoded(event).decode()))
             if event['event_type'] == 'ALARM_RAISED':
                 c.execute('INSERT OR IGNORE INTO alarms VALUES (?,?,?)', (event['event_id'], 1, encoded(event).decode()))
+            elif event['event_type'] == 'ALARM_CLEARED':
+                identity_keys = ('path_id', 'path_version', 'path_sha256',
+                                 'profile_snapshot_id', 'profile_sha256', 'tool_id')
+                supplied = [key for key in identity_keys
+                            if event.get(key) not in (None, '', 0)]
+                rows = c.execute('SELECT id,payload FROM alarms WHERE active=1').fetchall()
+                for row in rows:
+                    alarm = json.loads(row['payload'])
+                    same_alarm = all(alarm.get(key) == event.get(key)
+                                     for key in ('phase', 'code'))
+                    same_scope = (all(alarm.get(key) == event.get(key) for key in supplied)
+                                  if supplied else alarm.get('run_id') == event.get('run_id'))
+                    if same_alarm and same_scope:
+                        alarm.update(
+                            cleared_at=event['occurred_at'],
+                            clear_event_id=event['event_id'],
+                            clear_message=event.get('message', ''),
+                        )
+                        c.execute('UPDATE alarms SET active=0,payload=? WHERE id=?',
+                                  (encoded(alarm).decode(), row['id']))
 
     def events(self, run_id=None):
         with self.db() as c:
@@ -250,7 +270,10 @@ class Storage:
 
     def alarms(self):
         with self.db() as c:
-            return [{**json.loads(r['payload']), 'active': bool(r['active'])} for r in c.execute('SELECT * FROM alarms')]
+            result = [{**json.loads(r['payload']), 'active': bool(r['active'])}
+                      for r in c.execute('SELECT * FROM alarms')]
+        result.sort(key=lambda alarm: (alarm['active'], alarm.get('occurred_at', '')), reverse=True)
+        return result
 
     def inspect(self, body, inspector):
         rec = dict(id=uid(), **body, inspector=inspector, created_at=now())
