@@ -1,6 +1,6 @@
 # c2_process · 코드·담당자·통합할 공정
 
-> **2026-09-23 entry 계획 추가:** `entry_planner.py`가 공용 workcell HOME,
+> **2026-09-25 entry·HOME 복귀 계획 연결:** `entry_planner.py`가 공용 workcell HOME,
 > 현재 도구 끝 자세·관절, 실측 중심·반지름·윗면, 첫 APPROACH와 승인된
 > `entry_planning` 탐색 범위를 받아 `현재/HOME → 상공 entry → 첫 APPROACH`
 > 후보를 만든다. 실제 IK·관절·J6·J3/J5 특이점·보간 관절 변화·단순 원통
@@ -23,7 +23,7 @@
 
 확인일 **2026-09-25**, GitHub main **`987a3b72b29e7224be62e6bdfa6ab40b744375aa`**(PR #90 병합). main 소스, 담당자 작업 보고, 로컬 초안, 구현 예정 기능을 구분한다. 소스 존재와 HMI부터 실기까지의 통합 완료는 다르다.
 
-현재 main의 순서는 **준비 확인 → 실제 양초 측정 → 측정 원본·설정 BIND → 실측값으로 3D 경로 생성 → 미리보기 → PRECHECK·ENTRY·최종 관절 검사 → 조각**이다. 측정 전에 기준 3D 경로를 만든 뒤 공정에서 다시 옮기던 안은 사용하지 않는다. [전체 구조](../../../docs/SYSTEM_STRUCTURE.md), [계약 v2](../../../docs/INTERFACE_GUIDE.md)을 함께 확인한다.
+현재 main의 entry 활성 정상 순서는 **준비 확인 → 실제 양초 측정 → 측정 원본·설정 BIND → 실측값으로 3D 경로 생성 → 미리보기 → PRECHECK·ENTRY·최종 관절 검사 → 조각 → 검사된 RETURN_HOME**이다. entry 비활성 prepared 호환 흐름에서는 ENTRY와 RETURN_HOME이 생략될 수 있다. 측정 전에 기준 3D 경로를 만든 뒤 공정에서 다시 옮기던 안은 사용하지 않는다. [전체 구조](../../../docs/SYSTEM_STRUCTURE.md), [계약 v2](../../../docs/INTERFACE_GUIDE.md)을 함께 확인한다.
 
 **담당자 기준 핵심 흐름: 이시율 측정 → 실측 좌표 전달 → 노홍동 경로 생성 → 김세은 관절 검사 → 이시율 조각.** 대시보드 미리보기는 경로 생성과 관절 검사 사이에 둔다.
 
