@@ -16,10 +16,10 @@ string path_id
 uint32 path_version
 # IDLE, RUNNING, STOPPING, STOPPED, SUCCEEDED, FAILED, UNKNOWN
 string status "UNKNOWN"
-# entry 활성 prepared 정상 흐름: PRECHECK, ENTRY, ENGRAVE, RETURN_HOME, FINISH.
-# entry 비활성 prepared 흐름은 ENTRY/RETURN_HOME을 생략할 수 있다.
-# 직접 실행 호환 흐름에서는 TOOL_CHECK, APPROACH, RETRACT가 사용될 수 있다.
-# RETURN_HOME은 정상 성공 경로의 검사된 계획이며 실패·정지 뒤 자동 복귀가 아니다.
+# REAL 또는 승인된 entry 활성 prepared: PRECHECK, ENTRY, ENGRAVE, RETURN_HOME, FINISH.
+# entry 비활성 호환 흐름에서는 ENTRY와 RETURN_HOME이 생략될 수 있다.
+# 호환 실행 경로에서는 TOOL_CHECK, APPROACH, RETRACT가 추가로 보일 수 있다.
+# TOOL_CHECK는 저장된 보정 확인이다. 새 보정값으로 실행 경로를 바꾸지 않는다.
 string phase
 float64 engraving_progress
 float64 elapsed_s

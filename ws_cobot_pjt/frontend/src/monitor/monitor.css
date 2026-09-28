@@ -861,6 +861,12 @@ small {
   gap: 6px;
   color: #4b6245;
 }
+.readiness dd.wrap-value {
+  max-width: 68%;
+  justify-content: flex-end;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
 .status-dot {
   height: 5px;
   width: 5px;
@@ -880,6 +886,25 @@ small {
 }
 .start-button {
   margin-top: 17px;
+}
+.error-detail {
+  color: #a45c35 !important;
+  font-size: 11px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.blocker-list {
+  margin-top: 12px;
+  padding: 11px 13px;
+  border: 1px solid #e8c9a6;
+  background: #fff9ef;
+  color: #8f653d;
+  font-size: 10px;
+  line-height: 1.6;
+}
+.blocker-list ul {
+  margin: 6px 0 0;
+  padding-left: 17px;
 }
 .event-footer {
   border-top: 1px solid #dfe5d7;
@@ -1246,10 +1271,31 @@ small {
   padding: 25px 12px;
   color: #ac8355;
 }
+.alarm-list > div.cleared {
+  color: #83917a;
+  background: #fafbf8;
+}
+.alarm-list > div > div {
+  min-width: 0;
+  flex: 1;
+}
+.alarm-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.alarm-heading small {
+  color: #8c9983;
+}
 .alarm-list p {
   font-size: 12px;
   margin-top: 8px;
   color: #7e8b71;
+}
+.alarm-list .alarm-action {
+  color: #9c613f;
+  overflow-wrap: anywhere;
 }
 .alarm-list b {
   font-size: 12px;
@@ -1258,6 +1304,13 @@ small {
   margin-left: auto;
   font-size: 11px;
   color: #a1ad92;
+}
+.quality-verdict {
+  display: block;
+  margin-bottom: 5px;
+  color: #587144;
+  font-size: 11px;
+  font-weight: 600;
 }
 .settings-grid {
   display: grid;

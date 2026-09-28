@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ApiError, request } from "./api";
 import type { PreparationRecord, PreparationState, Snapshot } from "./api";
+import { errorGuidance, normalizeErrorCode } from "./errorGuidance";
 import {
   activePreparation,
   measurementPoints,
@@ -42,6 +43,8 @@ export default function PreparationPanel({
   const [manualReady, setManualReady] = useState(false);
   const body = useRef<Body | null>(null);
   const current = data.current;
+  const currentErrorCode =
+    current?.result?.error_code || current?.error_code || "NONE";
   const real = data.input_config?.payload.source_mode === "REAL";
   useEffect(() => {
     try {
@@ -151,7 +154,10 @@ export default function PreparationPanel({
             : "ROS 연결 대기"}
         </span>
       </div>
-      <p className="field-help">{data.reason}{data.start_error && <strong role="alert"> {data.start_error}</strong>}</p>
+      <p className="field-help">
+        {data.reason}
+        {data.start_error && <strong role="alert"> {data.start_error}</strong>}
+      </p>
       {data.input_config && (
         <p className="field-help">
           <a
@@ -252,6 +258,12 @@ export default function PreparationPanel({
               current?.feedback.at(-1)?.message ||
               "최종 준비 결과가 확인되어야 측정값을 사용할 수 있습니다."}
           </p>
+          {normalizeErrorCode(currentErrorCode) !== "NONE" && (
+            <p className="error-detail">
+              코드 {normalizeErrorCode(currentErrorCode)} · 조치:{" "}
+              {errorGuidance(currentErrorCode).action}
+            </p>
+          )}
           <div className="measurement-points" aria-label="옆면 8점 측정 상태">
             {points.map((state, i) => (
               <span

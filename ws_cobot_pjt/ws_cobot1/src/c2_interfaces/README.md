@@ -1,6 +1,6 @@
 # c2_interfaces · 공통 ROS 2 통신 정의 v2
 
-2026-09-27 현재 `PrepareWorkpiece.action`은 HMI 서버·ROS 게이트웨이·공정 ActionServer가 사용하는 고정 드릴 v2 준비 계약이다. `/c2/prepare_workpiece`의 `MEASURE`/`BIND_SNAPSHOT`, ID 발급·설정 해시·타입 결과·스냅샷 등록·취소 규칙은 [준비 Action 계약](../../../docs/PREPARE_WORKPIECE_ACTION.md)을 따른다. 코드·모의 통합은 실제 M0609 반복 공정과 측정 정확도의 실기 검증 완료를 뜻하지 않는다.
+2026-09-25 확인: 준비용 `PrepareWorkpiece.action`은 HMI 서버·ROS 게이트웨이·공정 노드의 `MEASURE/BIND_SNAPSHOT` 흐름에 연결되어 있다. ID 발급·설정 해시·타입 결과·스냅샷 등록·취소는 [준비 Action 계약](../../../docs/PREPARE_WORKPIECE_ACTION.md)을 따른다. 코드 연결과 실제 M0609 반복 측정·가공 검증 완료는 구별한다.
 
 현재 v2는 고정 드릴 전용이다. 통신 이름·필드 배치는 v1과 같지만 집기·반납·청소를 없애고 TOOL_CHECK를 추가했다. [v1→v2 전환](../../../docs/C2_FIXED_DRILL_20260919.md)을 따라 모든 소비자를 함께 갱신한다. 아래 최초 타입 시험 기록은 v1 시점이며 이번 검증은 [고정 드릴 검증 기록](../../../docs/validation/2026-09-19-fixed-drill.md)을 따른다.
 
@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | `action/` | `GeneratePath.action` | 모니터 → 좌표·경로 생성 |
 | `action/` | `ExecuteProcess.action` | 모니터 → 전체 공정 실행 |
-| `action/` | `PrepareWorkpiece.action` | 모니터 → 사전 검사·필요 시 HOME 이동·측정 / 결과 BIND |
+| `action/` | `PrepareWorkpiece.action` | 모니터 → 사전 검사·홈 복귀·측정 / 결과 등록 |
 | `srv/` | `StopProcess.srv` | 모니터 → 정지 접수 |
 | `msg/` | `ProcessState.msg` | 공정 → 최신 상태 |
 | `msg/` | `ProcessEvent.msg` | 공정 → 기록할 이벤트 |

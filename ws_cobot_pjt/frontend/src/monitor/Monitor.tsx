@@ -34,6 +34,7 @@ import {
   statusNames,
 } from "./api";
 import type {
+  Alarm,
   Asset,
   Generation,
   PathResult,
@@ -41,6 +42,7 @@ import type {
   Run,
   Snapshot,
 } from "./api";
+import { errorGuidance, normalizeErrorCode } from "./errorGuidance";
 import { CylinderPreview, UnwrappedPreview } from "./Previews";
 import "./monitor.css";
 import LivePathPreview from "./LivePathPreview";
@@ -82,6 +84,13 @@ const timeLabel = (iso: string) =>
     minute: "2-digit",
     second: "2-digit",
   });
+const speedSummary = (profiles?: Record<string, { vel_mm_s?: number }>) => {
+  if (!profiles) return "미제공";
+  return Object.entries(profiles)
+    .map(([name, value]) => `${name} ${value.vel_mm_s ?? "?"} mm/s`)
+    .join(" · ");
+};
+const latestVerdict = (run: Run) => run.inspections?.[0]?.verdict || "미검사";
 
 export default function Monitor() {
   const [nav, setNav] = useState("prepare"),
@@ -106,15 +115,7 @@ export default function Monitor() {
     [startUncertain, setStartUncertain] = useState(false),
     [stopPending, setStopPending] = useState(false);
   const [runs, setRuns] = useState<Run[]>([]),
-    [alarms, setAlarms] = useState<
-      {
-        event_id: string;
-        code: string;
-        message: string;
-        occurred_at: string;
-        active: boolean;
-      }[]
-    >([]),
+    [alarms, setAlarms] = useState<Alarm[]>([]),
     [detail, setDetail] = useState<Run | null>(null);
   const [verdict, setVerdict] = useState("PASS"),
     [reason, setReason] = useState("");
@@ -149,8 +150,14 @@ export default function Monitor() {
       busy || pending || startUncertain || !!snapshot?.preparation.blocks_work;
   const preparationBlocked =
     !!snapshot?.preparation.blocks_work ||
-    ((snapshot?.source_mode === 'REAL' || !isRos || capabilities?.test_only_execution) && !snapshot?.preparation.preview_ready);
+    ((snapshot?.source_mode === "REAL" ||
+      !isRos ||
+      capabilities?.test_only_execution) &&
+      !snapshot?.preparation.preview_ready);
   const profile = snapshot?.profile;
+  const executionContext = profile?.payload.execution_context;
+  const toolProfile = executionContext?.tool_profile;
+  const stopProfile = executionContext?.stop_profile;
   const baseXOrigin =
     !!profile?.payload.surface.axis_origin_m &&
     (profile.payload.surface.u_origin_angle_deg || 0) === 0;
@@ -187,7 +194,8 @@ export default function Monitor() {
     (!result?.test_only || capabilities?.test_only_execution) &&
     !result?.execution_blocked &&
     result?.execution_precheck !== "OUT_OF_LIMITS" &&
-    (snapshot?.source_mode !== "REAL" || result?.real_execution_allowed === true) &&
+    (snapshot?.source_mode !== "REAL" ||
+      result?.real_execution_allowed === true) &&
     currentResult &&
     reviewed &&
     (snapshot?.source_mode !== "REAL" ||
@@ -202,6 +210,34 @@ export default function Monitor() {
     !generating &&
     !serverGenerating &&
     !snapshot?.storage_error;
+  const startBlockers = (() => {
+    const values: string[] = [];
+    if (!capabilities?.execution_enabled)
+      values.push(capabilities?.execution_block_reason || "실행 기능 비활성");
+    if (result?.test_only && !capabilities?.test_only_execution)
+      values.push("시험 전용 경로는 현재 실행 설정에서 사용할 수 없음");
+    if (result?.execution_blocked)
+      values.push(`경로 실행 제한: ${result.execution_blocked}`);
+    if (result?.execution_precheck === "OUT_OF_LIMITS")
+      values.push("경로 노드 실행 사전검사 범위 초과");
+    if (!currentResult)
+      values.push(stale ? "현재 입력으로 경로 재생성 필요" : "현재 경로 없음");
+    if (currentResult && !reviewed) values.push("운영자 미리보기 확인 필요");
+    if (
+      snapshot?.source_mode === "REAL" &&
+      snapshot?.preparation.current?.payload?.operator_confirmed_fixed_cell !==
+        true
+    )
+      values.push("REAL 고정 설비 운영자 확인 기록 없음");
+    if (!drillOn) values.push("드릴 수동 ON 확인 필요");
+    if (preparationBlocked) values.push("준비·측정 상태가 작업을 차단함");
+    if (!fresh) values.push("최신 서버/ROS 상태 미확인");
+    if (busy || pending || uploading || generating || serverGenerating)
+      values.push("다른 요청 처리 중");
+    if (snapshot?.storage_error)
+      values.push(`저장소 오류: ${snapshot.storage_error}`);
+    return [...new Set(values)];
+  })();
 
   useEffect(() => {
     const id = snapshot?.preparation.current?.request_id;
@@ -440,7 +476,11 @@ export default function Monitor() {
           );
           return;
         }
-        throw new Error(g.result?.message || "경로를 생성하지 못했습니다.");
+        throw new ApiError(
+          g.result?.message || "경로를 생성하지 못했습니다.",
+          409,
+          g.result?.error_code || "UNKNOWN",
+        );
       }
       const p = await request<PathResult>(
         `/paths/${g.result.path_id}/versions/${g.result.path_version}`,
@@ -631,7 +671,9 @@ export default function Monitor() {
           </div>
           <span className="mode-badge">
             <span />
-            {snapshot?.virtual_device ? "가상 장치 · 로봇 미연결" : snapshot?.source_mode || "연결 대기"}
+            {snapshot?.virtual_device
+              ? "가상 장치 · 로봇 미연결"
+              : snapshot?.source_mode || "연결 대기"}
           </span>
           <div
             className={`connection ${headerConnected ? "online" : "offline"}`}
@@ -718,15 +760,31 @@ export default function Monitor() {
             {nav === "prepare" ? (
               <div className="stepper">
                 {(snapshot?.preparation.supported
-                  ? ["이미지·설정", "준비·측정", "경로 생성", "미리보기 확인", "실행 요청"]
+                  ? [
+                      "이미지·설정",
+                      "준비·측정",
+                      "경로 생성",
+                      "미리보기 확인",
+                      "실행 요청",
+                    ]
                   : ["이미지·설정", "경로 생성", "미리보기 확인", "실행 요청"]
                 ).map((s, i) => {
                   const hasPreparation = !!snapshot?.preparation.supported;
-                  const step = !asset ? 0
-                    : hasPreparation && !snapshot?.preparation.preview_ready ? 1
-                    : !currentResult ? (hasPreparation ? 2 : 1)
-                    : !reviewed ? (hasPreparation ? 3 : 2)
-                    : (hasPreparation ? 4 : 3);
+                  const step = !asset
+                    ? 0
+                    : hasPreparation && !snapshot?.preparation.preview_ready
+                      ? 1
+                      : !currentResult
+                        ? hasPreparation
+                          ? 2
+                          : 1
+                        : !reviewed
+                          ? hasPreparation
+                            ? 3
+                            : 2
+                          : hasPreparation
+                            ? 4
+                            : 3;
                   return (
                     <div
                       key={s}
@@ -748,8 +806,10 @@ export default function Monitor() {
               </div>
             ) : (
               <span className="tag">
-                {snapshot?.virtual_device ? "가상 장치 · 로봇 미연결" : snapshot?.source_mode || "연결 대기"} ·{" "}
-                {snapshot?.transport || "연결 대기"}
+                {snapshot?.virtual_device
+                  ? "가상 장치 · 로봇 미연결"
+                  : snapshot?.source_mode || "연결 대기"}{" "}
+                · {snapshot?.transport || "연결 대기"}
               </span>
             )}
           </div>
@@ -857,6 +917,16 @@ export default function Monitor() {
                     ? ` · ${serverGeneration.result.message}`
                     : " · 새로고침해도 계산은 계속됩니다."}
                 </span>
+                {serverGeneration.result?.error_code &&
+                  normalizeErrorCode(serverGeneration.result.error_code) !==
+                    "NONE" && (
+                    <span className="error-detail">
+                      코드{" "}
+                      {normalizeErrorCode(serverGeneration.result.error_code)}
+                      {" · "}조치:{" "}
+                      {errorGuidance(serverGeneration.result.error_code).action}
+                    </span>
+                  )}
               </div>
               {serverGenerating && serverGeneration.state !== "UNKNOWN" && (
                 <button
@@ -974,7 +1044,9 @@ export default function Monitor() {
                   <div>
                     <dt>이미지 처리</dt>
                     <dd>
-                      {capabilities?.preset === "raster_centerline_bezier" ? "첨부 이미지 중심선 변환" : "모의 중심선 샘플"}
+                      {capabilities?.preset === "raster_centerline_bezier"
+                        ? "첨부 이미지 중심선 변환"
+                        : "모의 중심선 샘플"}
                     </dd>
                   </div>
                 </dl>
@@ -1123,8 +1195,12 @@ export default function Monitor() {
                           : "경로 대기"}
                     </span>
                   </div>
-                  {(result?.execution_blocked || result?.execution_precheck === "OUT_OF_LIMITS") && (
-                    <p role="status">경로 노드 실행 제한: {result.execution_blocked || result.execution_precheck}</p>
+                  {(result?.execution_blocked ||
+                    result?.execution_precheck === "OUT_OF_LIMITS") && (
+                    <p role="status">
+                      경로 노드 실행 제한:{" "}
+                      {result.execution_blocked || result.execution_precheck}
+                    </p>
                   )}
                   <dl className="readiness">
                     <div>
@@ -1133,9 +1209,12 @@ export default function Monitor() {
                         {currentResult ? (
                           <>
                             <CheckCircle2 size={14} />
-                            {result?.test_only && !capabilities?.test_only_execution
+                            {result?.test_only &&
+                            !capabilities?.test_only_execution
                               ? "기하 검사 통과 · 실기 미검증"
-                              : snapshot?.source_mode === "REAL" ? "경로 생성 검사 통과 · 최종 실행 검사 전" : "모의 범위 확인"}
+                              : snapshot?.source_mode === "REAL"
+                                ? "경로 생성 검사 통과 · 최종 실행 검사 전"
+                                : "모의 범위 확인"}
                           </>
                         ) : stale ? (
                           "재생성 필요"
@@ -1169,6 +1248,45 @@ export default function Monitor() {
                             : "미확인"}
                       </dd>
                     </div>
+                    <div>
+                      <dt>접촉 / 깊이</dt>
+                      <dd>
+                        {toolProfile?.contact_mode || "미제공"}
+                        {toolProfile?.depth_m != null
+                          ? ` · ${(toolProfile.depth_m * 1000).toFixed(2)} mm`
+                          : ""}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>동작 속도</dt>
+                      <dd className="wrap-value">
+                        {speedSummary(executionContext?.motion_profiles)}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>정지 확인</dt>
+                      <dd>
+                        {stopProfile?.confirmation_timeout_s != null
+                          ? `${stopProfile.confirmation_timeout_s}초 제한`
+                          : "미제공"}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>경로 동일성</dt>
+                      <dd>
+                        {result
+                          ? `${short(result.path_id)} · v${result.path_version} · ${short(result.path_sha256)}`
+                          : "미제공"}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>설정 스냅샷</dt>
+                      <dd>
+                        {profile
+                          ? `${short(profile.id)} · ${short(profile.sha256)}`
+                          : "미제공"}
+                      </dd>
+                    </div>
                   </dl>
                   <div className="rule" />
                   <label className="check-row">
@@ -1189,7 +1307,9 @@ export default function Monitor() {
                         setDrillConfirmation(e.target.checked ? drillKey : null)
                       }
                     />
-                    {snapshot?.source_mode === "SIMULATION" ? "시험용 드릴 ON 확인 (실제 전원 조작 없음)" : "드릴을 수동으로 켰습니다. (화면 확인 전용)"}
+                    {snapshot?.source_mode === "SIMULATION"
+                      ? "시험용 드릴 ON 확인 (실제 전원 조작 없음)"
+                      : "드릴을 수동으로 켰습니다. (화면 확인 전용)"}
                   </label>
                   <p className="field-help">
                     이 체크는 드릴 전원 센서나 제어 명령이 아닙니다.
@@ -1207,6 +1327,16 @@ export default function Monitor() {
                     )}{" "}
                     {startUncertain ? "같은 실행 요청 다시 확인" : "시작 요청"}
                   </button>
+                  {!!startBlockers.length && (
+                    <div className="blocker-list" role="status">
+                      <b>시작 차단 사유</b>
+                      <ul>
+                        {startBlockers.map((blocker) => (
+                          <li key={blocker}>{blocker}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
                   <p className="field-help">
                     {capabilities?.execution_block_reason ||
                       "확인 후 요청 가능 · 공정 제어에서 준비 조건 재검사"}
@@ -1250,8 +1380,18 @@ export default function Monitor() {
                       {run?.message ||
                         "작업 준비에서 경로를 생성하고 확인한 뒤 실행을 요청합니다."}
                     </p>
+                    {run?.error_code &&
+                      normalizeErrorCode(run.error_code) !== "NONE" && (
+                        <p className="error-detail">
+                          코드 {normalizeErrorCode(run.error_code)} · 조치:{" "}
+                          {errorGuidance(run.error_code).action}
+                        </p>
+                      )}
                     {snapshot?.execution_pending && run && !active(run) && (
-                      <p role="status">최종 응답을 확인 중입니다. 확인이 끝나면 다음 작업을 요청할 수 있습니다.</p>
+                      <p role="status">
+                        최종 응답을 확인 중입니다. 확인이 끝나면 다음 작업을
+                        요청할 수 있습니다.
+                      </p>
                     )}
                   </div>
                   <strong className="percent">
@@ -1296,7 +1436,7 @@ export default function Monitor() {
                     <b>
                       고정 드릴 /{" "}
                       {snapshot?.state?.mounted_tool_id
-                        ? "모의 확인"
+                        ? `${snapshot.state.mounted_tool_id} · ${snapshot.source_mode === "REAL" ? "REAL 관측" : "모의 관측"}`
                         : "미확인"}
                     </b>
                   </div>
@@ -1321,11 +1461,27 @@ export default function Monitor() {
                 <div className="monitoring-note">
                   <ShieldCheck size={20} />
                   <div>
-                    <b>실제 장비의 센서값은 연결되지 않았습니다.</b>
-                    <p>
-                      모의 단계와 이벤트로 화면을 검증합니다. TCP·관절·온도는
-                      미지원 상태입니다.
-                    </p>
+                    {snapshot?.source_mode === "REAL" ? (
+                      <>
+                        <b>
+                          {fresh
+                            ? "REAL 공정 상태를 수신 중입니다."
+                            : "REAL 공정 상태를 확인할 수 없습니다."}
+                        </b>
+                        <p>
+                          수신 품질과 측정 시각을 함께 확인하세요. 미확인·오래된
+                          값은 정상으로 간주하지 않습니다.
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <b>실제 장비 센서가 아닌 모의 상태입니다.</b>
+                        <p>
+                          모의 단계와 이벤트로 화면을 검증합니다. 실기 검증
+                          결과로 사용하지 않습니다.
+                        </p>
+                      </>
+                    )}
                   </div>
                 </div>
                 {!busy && (
@@ -1379,10 +1535,10 @@ export default function Monitor() {
                     <tr>
                       <th>실행 / 시각</th>
                       <th>경로 버전</th>
-                      <th>결과</th>
+                      <th>공정 결과</th>
                       <th>단계</th>
                       <th>조각 진행</th>
-                      <th>검사</th>
+                      <th>품질 판정 / 상세</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1409,6 +1565,9 @@ export default function Monitor() {
                           {Math.round((r.engraving_progress || 0) * 100)}%
                         </td>
                         <td>
+                          <span className="quality-verdict">
+                            {latestVerdict(r)}
+                          </span>
                           <button
                             className="text-button"
                             onClick={() =>
@@ -1438,7 +1597,10 @@ export default function Monitor() {
                   <span className="eyebrow">ALARMS & EVENTS</span>
                   <h2>알람 기록</h2>
                 </div>
-                <span className="tag">{alarms.length}건</span>
+                <span className="tag">
+                  활성 {alarms.filter((alarm) => alarm.active).length} / 전체{" "}
+                  {alarms.length}
+                </span>
               </div>
               {!alarms.length ? (
                 <Empty
@@ -1448,11 +1610,33 @@ export default function Monitor() {
               ) : (
                 <div className="alarm-list">
                   {alarms.map((a) => (
-                    <div key={a.event_id}>
+                    <div
+                      key={a.event_id}
+                      className={a.active ? "active" : "cleared"}
+                    >
                       <Bell size={20} />
                       <div>
-                        <b>{a.code}</b>
+                        <div className="alarm-heading">
+                          <b>{a.code}</b>
+                          <span className={`tag ${a.active ? "amber" : ""}`}>
+                            {a.active ? "활성" : "해제"}
+                          </span>
+                          <small>
+                            {a.severity} · {phaseNames[a.phase] || a.phase}
+                          </small>
+                        </div>
                         <p>{a.message}</p>
+                        <p className="alarm-action">
+                          조치: {errorGuidance(a.code).action}
+                        </p>
+                        {!a.active && a.clear_message && (
+                          <p>
+                            해제 결과: {a.clear_message}
+                            {a.cleared_at
+                              ? ` · ${new Date(a.cleared_at).toLocaleString("ko-KR")}`
+                              : ""}
+                          </p>
+                        )}
                       </div>
                       <time>{timeLabel(a.occurred_at)}</time>
                     </div>
@@ -1525,12 +1709,52 @@ export default function Monitor() {
                     <dd>드릴 끝 · m / quaternion xyzw</dd>
                   </div>
                   <div>
-                    <dt>스냅샷 ID</dt>
-                    <dd className="mono">{profile?.id}</dd>
+                    <dt>스냅샷 ID / SHA-256</dt>
+                    <dd className="mono">
+                      {profile?.id || "미제공"}
+                      <br />
+                      {profile?.sha256 || "미제공"}
+                    </dd>
                   </div>
                   <div>
-                    <dt>실측·현장 설정</dt>
-                    <dd>팀 확인 대기</dd>
+                    <dt>실행 모드 / 접촉</dt>
+                    <dd>
+                      {executionContext?.source_mode ||
+                        snapshot?.source_mode ||
+                        "미제공"}
+                      {toolProfile?.contact_mode
+                        ? ` · ${toolProfile.contact_mode}`
+                        : " · 설정 미제공"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>가공 깊이</dt>
+                    <dd>
+                      {toolProfile?.depth_m != null
+                        ? `${(toolProfile.depth_m * 1000).toFixed(2)} mm`
+                        : "고정 깊이 설정 미제공"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>모션 속도</dt>
+                    <dd>{speedSummary(executionContext?.motion_profiles)}</dd>
+                  </div>
+                  <div>
+                    <dt>정지 확인 제한</dt>
+                    <dd>
+                      {stopProfile?.confirmation_timeout_s != null
+                        ? `${stopProfile.confirmation_timeout_s}초`
+                        : "미제공"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>J6 검사 여유</dt>
+                    <dd>
+                      {profile?.payload.joint_check_arguments?.j6_margin_deg !=
+                      null
+                        ? `${profile.payload.joint_check_arguments.j6_margin_deg}° · 현장 검증 별도`
+                        : "미제공"}
+                    </dd>
                   </div>
                 </dl>
                 <div className="info-box">
@@ -1656,7 +1880,16 @@ export default function Monitor() {
             </div>
             <p className="mono">{detail.run_id}</p>
             <div className="info-box">
-              {statusNames[detail.status]} · {detail.message}
+              공정 결과: {statusNames[detail.status]} · {detail.message}
+              {normalizeErrorCode(detail.error_code) !== "NONE" && (
+                <>
+                  <br />
+                  오류 코드: {normalizeErrorCode(detail.error_code)} · 조치:{" "}
+                  {errorGuidance(detail.error_code).action}
+                </>
+              )}
+              <br />
+              품질 판정: {latestVerdict(detail)}
               <br />
               경로 {short(detail.path_id)} · v{detail.path_version}
             </div>
