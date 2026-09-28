@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, File, UploadFile, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, FileResponse
 from PIL import Image, ImageOps, UnidentifiedImageError
 
@@ -80,6 +81,29 @@ def create_app(data_dir=None,tick=.4):
 
     @app.exception_handler(DomainError)
     async def domain_error(request,exc):return JSONResponse({'error_code':exc.code,'message':exc.message},status_code=exc.status)
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request, exc):
+        fields = []
+        details = []
+        for item in exc.errors():
+            location = '.'.join(str(part) for part in item.get('loc', ()) if part not in ('body', 'query', 'path')) or 'request'
+            message = item.get('msg', '잘못된 값')
+            details.append({'field': location, 'message': message, 'type': item.get('type', 'validation_error')})
+            fields.append(f'{location}: {message}')
+        summary = '; '.join(fields[:4]) or '요청 값을 확인하세요.'
+        if len(fields) > 4:
+            summary += f'; 그 외 {len(fields) - 4}건'
+        return JSONResponse(
+            {'error_code': 'INVALID_INPUT', 'message': summary, 'details': details},
+            status_code=422,
+        )
+
+    @app.exception_handler(HTTPException)
+    async def http_error(request, exc):
+        code = 'ASSET_NOT_FOUND' if exc.status_code == 404 else 'INVALID_INPUT' if exc.status_code in (400, 413, 422) else 'HTTP_ERROR'
+        message = exc.detail if isinstance(exc.detail, str) else '요청을 처리하지 못했습니다.'
+        return JSONResponse({'error_code': code, 'message': message}, status_code=exc.status_code)
 
     @app.exception_handler(ArtifactLoadError)
     async def artifact_error(request,exc):
@@ -227,7 +251,10 @@ def create_app(data_dir=None,tick=.4):
     async def runs():
         items=await asyncio.to_thread(app.state.store.runs)
         current=app.state.service.run
-        return [current if current and r['run_id']==current['run_id'] else r for r in items]
+        result=[dict(current) if current and r['run_id']==current['run_id'] else dict(r) for r in items]
+        for item in result:
+            item['inspections']=await asyncio.to_thread(app.state.store.inspections,item['run_id'])
+        return result
 
     @app.get('/api/operator/runs/{rid}')
     async def run_info(rid:str):return await app.state.service.get_run(rid)

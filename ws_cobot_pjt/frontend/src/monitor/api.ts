@@ -1,3 +1,5 @@
+import { errorText, normalizeErrorCode } from "./errorGuidance";
+
 export const SCHEMA_VERSION = 2;
 
 export type Placement = {
@@ -36,6 +38,30 @@ export type Profile = {
       axis_direction?: number[];
       u_origin_angle_deg?: number;
       reachable_angle_deg?: number[];
+    };
+    execution_context?: {
+      source_mode?: string;
+      motion_profiles?: Record<
+        string,
+        {
+          vel_mm_s?: number;
+          acc_mm_s2?: number;
+          completion_timeout_s?: number;
+        }
+      >;
+      tool_profile?: {
+        tool_id?: string;
+        contact_mode?: "fixed_depth" | "force_touch";
+        depth_m?: number;
+        touch_force_n?: number;
+        touch_speed_mm_s?: number;
+        force_limit_n?: number;
+      };
+      stop_profile?: { mode?: number; confirmation_timeout_s?: number };
+    };
+    joint_check_arguments?: {
+      limits_deg?: number[][];
+      j6_margin_deg?: number;
     };
   };
 };
@@ -93,6 +119,13 @@ export type Event = {
   code: string;
   message: string;
   phase: string;
+};
+export type Alarm = Event & {
+  run_id?: string;
+  active: boolean;
+  cleared_at?: string;
+  clear_event_id?: string;
+  clear_message?: string;
 };
 export type Run = {
   run_id: string;
@@ -301,10 +334,12 @@ export type Generation = {
 
 export class ApiError extends Error {
   constructor(
-    message: string,
+    public rawMessage: string,
     public status: number,
+    public code = "HTTP_ERROR",
+    public details: { field: string; message: string; type?: string }[] = [],
   ) {
-    super(message);
+    super(errorText(code, rawMessage));
   }
 }
 
@@ -336,6 +371,8 @@ export async function request<T>(
       throw new ApiError(
         message || `입력을 확인해 주세요 (${response.status})`,
         response.status,
+        normalizeErrorCode(detail.error_code || "HTTP_ERROR"),
+        Array.isArray(detail.details) ? detail.details : [],
       );
     }
     return await response.json();
