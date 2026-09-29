@@ -31,7 +31,10 @@ class KinematicIO:
         self.q=[0.,20.,60.,0.,90.,0.];self.ik_target=None
         self.center=[w['seed_axis_xy_m'][0]+.00005,w['seed_axis_xy_m'][1]-.00005]
         self.radius=w['seed_radius_m']+.0001
-        self.top_contact_tcp_z=.23485
+        # 현장 설정의 양초 높이 보정과 같은 범위를 사용한다. 고정값으로 두면
+        # 받침대 높이 변경 뒤 모의 접촉만 이전 높이에 남아 회귀 시험이 무효화된다.
+        top_range=w['top']['expected_tcp_z_range_m']
+        self.top_contact_tcp_z=sum(top_range)/2
         self.fail_probe=None;self.probe_index=None
 
     def metadata(self):

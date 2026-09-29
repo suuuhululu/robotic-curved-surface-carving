@@ -25,6 +25,7 @@ def trial(scenario, *, before_search=False):
     ad=SimulatedGuardedAdapter(io,w['tool_offset_m'],cfg['guards'],ready,check_trial_scene,clock=clock,sleep=clock.sleep)
     ad.trace=lambda e,d:traces.append((e,deepcopy(d)))
     raw_exec=ad.execute_measurement_step;raw_read=io.read;raw_stop=ad.stop_measurement
+    raw_ik=io.ik;raw_move=io.move
     def execute(step,*args):
         nonlocal active
         active=step;steps.append((step['label'],deepcopy(step)))
@@ -33,7 +34,7 @@ def trial(scenario, *, before_search=False):
             io.radius=w['seed_radius_m']
             if scenario in ('outlier','persistent_outlier') and index==4 and (attempts[index]==1 or scenario=='persistent_outlier'):
                 io.radius+=.0015
-            if scenario in ('early','early_repeat') and index==2 and (attempts[index]==1 or scenario=='early_repeat'):
+            if scenario in ('early','early_repeat','retract_failure') and index==2 and (attempts[index]==1 or scenario=='early_repeat'):
                 io.radius+=.0042  # baseline 확보 뒤 허용 접촉 구간보다 앞에서 접촉
             if scenario=='late' and index==2 and attempts[index]==1:
                 io.radius-=.004
@@ -49,7 +50,7 @@ def trial(scenario, *, before_search=False):
         nonlocal read_no
         result=raw_read();read_no+=1
         if active and active.get('point_index')==2:
-            unstable=scenario in ('baseline','baseline_repeat','stop_unknown','cancel','retract_failure') and (attempts[2]==1 or scenario=='baseline_repeat')
+            unstable=scenario in ('baseline','baseline_noop_branch','baseline_repeat','stop_unknown','cancel') and (attempts[2]==1 or scenario=='baseline_repeat')
             if unstable and not io.active:
                 result['force_n'][0]+=.35 if read_no%2 else -.35
             if scenario=='moving_baseline' and attempts[2]==1 and io.active:
@@ -65,7 +66,23 @@ def trial(scenario, *, before_search=False):
             if scenario=='stop_unknown':return StepResult('UNKNOWN','STOP_UNCONFIRMED',observed_state={'stop_confirmed':False})
             if scenario=='cancel':ctx.cancel.set()
         return raw_stop(profile)
+    def ik(target,space):
+        result=raw_ik(target,space)
+        if (scenario=='baseline_noop_branch' and active and active.get('point_index')==2 and
+                max(abs(a-b) for a,b in zip(target,io.p))<1e-7):
+            # 같은 Cartesian 목표에 제어기가 다른 유효 관절해를 돌려주는 실기 조건.
+            result[0]+=2.
+        return result
+    def move(target,*args):
+        if (scenario=='baseline_noop_branch' and active and active.get('point_index')==2 and
+                max(abs(a-b) for a,b in zip(target,io.p))<1e-7):
+            # 실제 제어기는 제자리 movel을 접수해도 모션 상태/위치를 바꾸지 않을 수 있다.
+            io.moves.append(target[:])
+            return
+        return raw_move(target,*args)
     ad.execute_measurement_step=execute;io.read=read;ad.stop_measurement=stop
+    if scenario=='baseline_noop_branch':
+        io.ik=ik;io.move=move
     result=measure_workpiece(ad,w,cfg['profiles'],ctx,events.append)
     return result,attempts,steps,events,traces
 
@@ -77,13 +94,24 @@ def test_same_point_reacquired_then_remaining_seven_preserved(scenario):
     assert attempts==Counter({0:1,1:1,2:2,3:1,4:1,5:1,6:1,7:1,8:1})
     labels=[label for label,_ in steps]
     first=labels.index('point_2_touch');second=labels.index('point_2_touch',first+1)
-    assert labels[first+1:second]==['point_2_retract','point_2_approach']
-    assert steps[first+1][1]['profile']=='retract'
-    assert steps[first+1][1]['target_pose']==steps[first][1]['start_pose']
+    between=labels[first+1:second]
+    assert between in ([],['point_2_retract'],['point_2_approach'])
+    if between:
+        assert steps[first+1][1]['target_pose']==steps[first][1]['start_pose']
     assert len(r.observed_state['measurement']['points'])==8
     assert [p['point_index'] for p in r.observed_state['measurement']['points']]==list(range(1,9))
     assert r.observed_state['home_return_confirmed']
     assert any(e=='stationary_baseline' and d['label']=='point_2_touch' for e,d in traces)
+
+
+def test_retry_skips_same_pose_move_even_when_ik_returns_another_joint_branch():
+    r,attempts,steps,events,_=trial('baseline_noop_branch')
+    assert r.ok,(r.error_code,r.message)
+    assert attempts[2]==2
+    labels=[label for label,_ in steps]
+    first=labels.index('point_2_touch');second=labels.index('point_2_touch',first+1)
+    assert labels[first+1:second]==[]
+    assert any('UNSTABLE_BASELINE' in e['message'] for e in events if e['point_index']==2)
 
 
 def test_single_fit_outlier_reacquires_only_that_point():
@@ -104,8 +132,11 @@ def test_repeat_failure_has_three_total_attempts_and_confirmed_stop(scenario):
     index=4 if scenario=='persistent_outlier' else 2
     assert attempts[index]==3
     assert r.observed_state['stop_confirmed'] and not r.observed_state['home_return_confirmed']
-    assert steps[-1][0]==('point_2_retract' if index==2 else 'point_4_outer')
-    if index==2:assert attempts[3]==0
+    if index==2:
+        assert attempts[3]==0
+        assert steps[-1][0]==('point_2_touch' if scenario=='baseline_repeat' else 'point_2_retract')
+    else:
+        assert steps[-1][0]=='point_4_outer'
 
 
 @pytest.mark.parametrize('scenario,code',[('absolute_force','FORCE_LIMIT'),('protection','NOT_READY'),('communication','COMMUNICATION_LOST'),('tcp','PROFILE_MISMATCH'),('authority','NOT_READY'),('timeout','TIMEOUT'),('stop_unknown','STOP_UNCONFIRMED'),('cancel','CANCELLED')])
