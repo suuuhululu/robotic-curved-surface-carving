@@ -152,7 +152,8 @@ def _geometry_check(candidate, workcell):
         for index, pose in enumerate(section["waypoints"]):
             ok, reason, gap = _geometry_ok(
                 pose, workcell, min_gap_m=RETURN_MIN_SURFACE_GAP_M,
-                retreating=retreating, box_z=box_z)
+                retreating=retreating, box_z=box_z,
+                check_trial_scene=False)
             if gap is not None:
                 worst_gap = min(worst_gap, gap)
                 if (retreating and previous_gap is not None
@@ -281,6 +282,25 @@ def plan_return_home_path(execution_plan, workcell, adapter, state, tool_offset_
     except (KeyError, TypeError, ValueError, OverflowError) as exc:
         return StepResult("FAILED", "NOT_READY", str(exc), "return_home_planning")
 
+    geometry_candidates = []
+    for candidate in candidates:
+        geometry = _geometry_check(candidate, normalized)
+        if geometry.ok:
+            geometry_candidates.append((candidate, geometry))
+        else:
+            rejected.append({"candidate_id": candidate["candidate_id"],
+                             "reason": geometry.message})
+    if not geometry_candidates:
+        return StepResult(
+            "FAILED", "RETURN_HOME_PATH_UNAVAILABLE", "실행 가능한 HOME 복귀 후보 없음",
+            "return_home_planning", {"rejected_candidates": rejected,
+                                     "static_geometry_rejected": True,
+                                     "ik_metrics": {
+                                         "inverse_kinematics_calls": 0,
+                                         "elapsed_s": 0.0,
+                                         "prefix_reused": predicted_end_joints_deg is not None,
+                                     }})
+
     prefix_ik_calls = 0
     prefix_ik_elapsed_s = 0.0
     if predicted_end_joints_deg is not None:
@@ -301,12 +321,7 @@ def plan_return_home_path(execution_plan, workcell, adapter, state, tool_offset_
     accepted = []
     total_ik_calls = prefix_ik_calls
     total_ik_elapsed_s = prefix_ik_elapsed_s
-    for candidate in candidates:
-        geometry = _geometry_check(candidate, normalized)
-        if not geometry.ok:
-            rejected.append({"candidate_id": candidate["candidate_id"],
-                             "reason": geometry.message})
-            continue
+    for candidate, geometry in geometry_candidates:
         return_path = _return_path(candidate)
         kwargs = dict(limits_deg=limits_deg, j6_margin_deg=j6_margin_deg)
         if joint_check_fn is check_path_joints:

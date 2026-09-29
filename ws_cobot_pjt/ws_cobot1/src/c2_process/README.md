@@ -90,7 +90,7 @@
 6. **`PRECHECK`**: 공정이 현재 상태와 모든 자산 바이트/해시를 확인한다. `entry_planner.py`가 실측 기하와 승인 정책으로 현재/HOME→상공 entry→첫 APPROACH 후보를 검사·해시 고정하고, 본 실행계획의 모든 명시 waypoint를 `check_path_joints()`로 검사한다.
 7. **`ENTRY`**: `execute_entry_plan()`이 검사·고정된 entry만 실행한다. 실행 중 후보를 다시 탐색하지 않는다.
 8. **`ENGRAVE`**: `execute_path()`가 검사한 동일 본 계획으로 조각한다. 양초 중심을 다시 옮기거나 깊이를 이중 적용하지 않는다.
-9. **`RETURN_HOME`**: PRECHECK에서 실측 기하로 검사·고정한 동일 HOME 복귀 계획만 실행한다. 실패·취소·정지 미확인 뒤에는 진입하지 않는다.
+9. **`RETURN_HOME`**: PRECHECK에서 실측 기하로 검사·고정한 동일 HOME 복귀 계획만 실행한다. 측정 접근 전용 `trial_scene` TCP 상자는 복귀 작업영역으로 재사용하지 않고, `engraving_workspace`와 받침대·양초·도구/그리퍼 형상 검사를 적용한다. 모든 후보가 정적 형상에서 실패하면 본 경로 IK 전에 거절 사유를 기록한다. 실패·취소·정지 미확인 뒤에는 진입하지 않는다.
 10. **`FINISH`·정지 결과**: 정상 복귀까지 확인한 결과를 Action·`/c2/process_state`·`/c2/process_events`로 전달한다. `/c2/stop_process` 접수와 실제 정지 완료를 구별한다.
 
 `return_home()`은 entry가 활성인 prepared 정상 성공 경로에 검사된 계획으로 연결된다. 실패·보호정지·정지 미확인 뒤에는 무조건 후퇴/HOME 명령을 보내지 않는다.

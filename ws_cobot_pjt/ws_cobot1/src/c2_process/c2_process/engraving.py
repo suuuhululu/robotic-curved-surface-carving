@@ -649,15 +649,18 @@ def _candle_geometry(w):
     return list(w["seed_axis_xy_m"]), float(w["seed_radius_m"]), "seed"
 
 
-def _geometry_ok(tip_pose, w, *, min_gap_m, retreating=False, box_z=True):
+def _geometry_ok(tip_pose, w, *, min_gap_m, retreating=False, box_z=True,
+                 check_trial_scene=True):
     """샘플 하나의 간섭 검사. 반환 (ok, reason, gap). 양초 = 축·반지름(_candle_geometry: 실측 우선)·윗면 top_z_m·받침대 bottom_z_m.
-    box_z=False: 후퇴·상승 단계용. 시작 자세(조각 높이)가 측정용 TCP 상자보다 낮을 수 있어 xy 만 상자로 보고 z 는 받침대·양초 조건으로만 본다."""
+    box_z=False: 후퇴·상승 단계용. 시작 자세(조각 높이)가 측정용 TCP 상자보다 낮을 수 있어 xy 만 상자로 보고 z 는 받침대·양초 조건으로만 본다.
+    check_trial_scene=False: 측정 접근용 TCP 상자를 적용하지 않는다. prepared 복귀는 별도의
+    engraving_workspace 검사 뒤 이 모드로 도구·양초·받침대 형상만 검사한다."""
     g = _tool_geometry(tip_pose, w)
     center, radius, _ = _candle_geometry(w)
     top, stand = float(w["top_z_m"]), float(w["bottom_z_m"])
     body_r = float(w.get("gripper_body_half_width_m") or 0.0)
     box = w.get("trial_scene") or {}
-    if box.get("tcp_min_m") and box.get("tcp_max_m"):
+    if check_trial_scene and box.get("tcp_min_m") and box.get("tcp_max_m"):
         axes = (0, 1, 2) if box_z else (0, 1)
         if not all(box["tcp_min_m"][k] <= g["tcp"][k] <= box["tcp_max_m"][k] for k in axes):
             return False, f"TCP 작업 범위 밖 {[round(v, 3) for v in g['tcp'][:3]]} (상자 {box['tcp_min_m']}~{box['tcp_max_m']})", None

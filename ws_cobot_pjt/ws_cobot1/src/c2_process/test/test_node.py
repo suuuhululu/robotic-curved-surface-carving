@@ -1209,12 +1209,26 @@ def test_ros_callbacks_publish_cached_signals_and_alarm_events(monkeypatch):
     node.report_candidate_diagnostic_start(node.goal_values, config, {
         'segment_id': 'seg-1', 'window_start_index': 4, 'window_end_index': 14})
     node.report_precheck(node.goal_values, config, diagnostic)
+    return_home_diagnostic = StepResult(
+        'FAILED', 'RETURN_HOME_PATH_UNAVAILABLE',
+        observed_state={'rejected_candidates': [{
+            'candidate_id': 'return-home-001',
+            'reason': 'return_lift sample 0: TCP [0.261, -0.031, 0.138] 거절',
+        }, {
+            'candidate_id': 'return-home-002',
+            'reason': '동일 형상 거절',
+        }]})
+    node.report_precheck(node.goal_values, config, return_home_diagnostic)
     assert [e.event_type for e in node.event_pub.sent] == [
-        'ALARM_RAISED', 'ALARM_CLEARED', 'DIAGNOSTIC', 'DIAGNOSTIC']
-    assert node.event_pub.sent[-2].code == 'IK_CANDIDATE_DIAGNOSTIC_STARTED'
-    assert node.event_pub.sent[-1].code == 'IK_CANDIDATE_DIAGNOSTIC'
-    assert 'space 2' in node.event_pub.sent[-1].message
-    assert 'Cartesian 동일성 미검증' in node.event_pub.sent[-1].message
+        'ALARM_RAISED', 'ALARM_CLEARED', 'DIAGNOSTIC', 'DIAGNOSTIC',
+        'DIAGNOSTIC', 'ALARM_RAISED']
+    assert node.event_pub.sent[-4].code == 'IK_CANDIDATE_DIAGNOSTIC_STARTED'
+    assert node.event_pub.sent[-3].code == 'IK_CANDIDATE_DIAGNOSTIC'
+    assert 'space 2' in node.event_pub.sent[-3].message
+    assert 'Cartesian 동일성 미검증' in node.event_pub.sent[-3].message
+    assert node.event_pub.sent[-2].code == 'RETURN_HOME_CANDIDATE_DIAGNOSTIC'
+    assert '[0.261, -0.031, 0.138]' in node.event_pub.sent[-2].message
+    assert '외 1개 후보' in node.event_pub.sent[-2].message
     assert all(e.profile_snapshot_id == 's' and e.profile_sha256 == 'sh' for e in node.event_pub.sent)
 
     made = []
