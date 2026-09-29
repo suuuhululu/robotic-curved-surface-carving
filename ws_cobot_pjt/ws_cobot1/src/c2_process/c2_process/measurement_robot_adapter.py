@@ -299,6 +299,12 @@ class GuardedMeasurementAdapter:
         self.current_context=None; self.workcell=None; self.native_targets={}
         self.stop_profile=None; self.trace=lambda event, data:None; self.trace_error=None
         self.force_warnings=[]; self._last_gap=None
+        # 설정 guards.transit_ik_preflight=false 면 TRANSIT(MOVE) 구간의 애플리케이션 레벨 IK/FK
+        # 표본 검사를 하지 않는다. 키가 없으면 기존처럼 모든 구간을 검사한다. 현장 간섭 검사,
+        # TCP/하중 대조, PROBE 구간 IK/FK, 실행 중 안전 감시는 이 설정과 무관하게 유지한다.
+        self.transit_ik_preflight=self.g.get('transit_ik_preflight',True)
+        if type(self.transit_ik_preflight) is not bool:
+            raise ValueError('transit_ik_preflight 는 bool 이어야 함')
 
     def _emit_trace(self,event,data):
         try:self.trace(event,data)
@@ -408,6 +414,7 @@ class GuardedMeasurementAdapter:
             raise MeasurementError('PROFILE_MISMATCH','실제 장치의 TCP/하중/REAL/AUTO 불일치')
         self.space=metadata['solution_space']
         initial=timed('observation',self._read); prev=initial['posx']; q=initial['joints_deg'];self._joint_guard(q)
+        known=q[:]
         if initial['robot_state']!=1 or initial['motion_status']!=0:
             raise MeasurementError('NOT_READY','이동 검사 시작 시 정지 미확인')
         # 그리퍼/드릴/철사/양초/작업대의 전체 경로와 접촉 구간 후퇴를 승인하는 검사기.
@@ -417,17 +424,40 @@ class GuardedMeasurementAdapter:
             raise MeasurementError('NOT_READY','진입/원호/접촉/후퇴의 현장 간섭 검사 미완료')
         count=0
         # TCP/해 공간/설정이 다른 다음 검사에는 재사용하지 않는다. 좌표 반올림 금지.
-        ik_cache={};fk_cache={}
+        ik_cache={};fk_cache={};kinds={'MOVE':0,'PROBE':0}
         for step in steps:
+            kinds[step['kind']]=kinds.get(step['kind'],0)+1
             target=continuous_target(step['target_pose'],self.offset,prev)
             self.native_targets[tuple(step['target_pose'])]=target[:]
-            q,count=self._check_segment(prev,target,step,workcell,context,q,count,deadline,metrics,timed,ik_cache,fk_cache)
-            self.expected[tuple(step['target_pose'])]=q[:];prev=target
+            if self.transit_ik_preflight or step['kind']=='PROBE':
+                if q is None:
+                    # 직전 TRANSIT 을 IK 없이 넘겼으므로 접촉 구간 시작점의 관절 해부터 구한다.
+                    q=self._seed_joints(prev,known,timed)
+                q,count=self._check_segment(prev,target,step,workcell,context,q,count,deadline,metrics,timed,ik_cache,fk_cache)
+                self.expected[tuple(step['target_pose'])]=q[:];known=q[:]
+            else:
+                # TRANSIT: 검증된 Cartesian 목표를 그대로 쓴다. 관절 해는 모른다(None).
+                metrics['transit_segments_without_ik']=metrics.get('transit_segments_without_ik',0)+1
+                self.expected[tuple(step['target_pose'])]=None;q=None
+            prev=target
         timed('readiness',self._ready,context)
+        # all_segments_checked: 모든 구간이 그 종류에 정해진 검사를 통과했다는 뜻이다.
+        #   공통 = 현장 간섭·TCP/하중·소유권, PROBE = 제어기 IK/FK 표본, TRANSIT = 설정에 따라 IK/FK 표본.
+        #   TRANSIT 의 IK/FK 수행 여부는 transit_ik_fk_checked 로 따로 밝힌다.
         return StepResult('SUCCEEDED',observed_state=dict(all_segments_checked=True,probe_envelopes_checked=True,
             ownership_confirmed=True,tcp_load_match=True,
-            validation_level='SAMPLED_CONTROLLER_IK_FK_AND_EXTERNAL_SCENE_CHECK',sample_count=count,
+            validation_level=('SAMPLED_CONTROLLER_IK_FK_AND_EXTERNAL_SCENE_CHECK' if self.transit_ik_preflight
+                              else 'SCENE_CHECK_WITH_PROBE_ONLY_IK_FK'),
+            transit_ik_fk_checked=self.transit_ik_preflight,probe_ik_fk_checked=True,
+            transit_segments=kinds['MOVE'],probe_segments=kinds['PROBE'],sample_count=count,
             scene_record=scene,full_continuous_collision_checked=False))
+
+    def _seed_joints(self,point,known,timed):
+        """한 점의 제어기 IK 해를 직전에 알던 관절 회전수에 맞춰 돌려준다 (PROBE 시작점용)."""
+        q=list(vector(timed('ik',self.io.ik,point,self.space),6,'IK joints'))
+        for axis in (0,3,5):q[axis]+=360*round((known[axis]-q[axis])/360)
+        self._joint_guard(q)
+        return q
 
     def _check_segment(self,prev,target,step,workcell,context,q,count,deadline,metrics,timed,ik_cache,fk_cache):
         """한 구간의 보간 표본을 제어기 IK/FK 로 검사하고 (끝 관절, 누적 표본 수)를 돌려준다."""
@@ -496,16 +526,20 @@ class GuardedMeasurementAdapter:
             scene=timed('scene',self.scene_check,[step],workcell,initial)
             if scene.get('path_checked') is not True or scene.get('probe_envelopes_checked') is not True:
                 raise MeasurementError('NOT_READY','재시도 구간의 현장 간섭 검사 미완료')
-            q,count=self._check_segment(initial['posx'],self.native_targets[key],step,workcell,context,
-                                        q,0,deadline,metrics,timed,{},{})
-            # 도착 판정은 처음 검사한 관절 해를 기준으로 하므로 같은 해에 도달해야 한다.
-            if max(abs(a-b) for a,b in zip(q,self.expected[key]))>self.g['completion_joint_deg']:
-                raise MeasurementError('IK_DISCONTINUITY','재시도 구간의 끝 관절이 처음 검사한 해와 다름')
+            count=0
+            if self.expected[key] is not None:
+                q,count=self._check_segment(initial['posx'],self.native_targets[key],step,workcell,context,
+                                            q,0,deadline,metrics,timed,{},{})
+                # 도착 판정은 처음 검사한 관절 해를 기준으로 하므로 같은 해에 도달해야 한다.
+                if max(abs(a-b) for a,b in zip(q,self.expected[key]))>self.g['completion_joint_deg']:
+                    raise MeasurementError('IK_DISCONTINUITY','재시도 구간의 끝 관절이 처음 검사한 해와 다름')
             timed('readiness',self._ready,context)
             metrics['outcome']='SUCCEEDED'
             return StepResult('SUCCEEDED',observed_state=dict(all_segments_checked=True,probe_envelopes_checked=True,
                 ownership_confirmed=True,tcp_load_match=True,
-                validation_level='SINGLE_TARGET_RECHECK_IK_FK_AND_SCENE',sample_count=count,
+                validation_level=('SINGLE_TARGET_RECHECK_IK_FK_AND_SCENE' if self.expected[key] is not None
+                                  else 'SINGLE_TARGET_RECHECK_SCENE_ONLY'),
+                transit_ik_fk_checked=self.expected[key] is not None,sample_count=count,
                 scene_record=scene,full_continuous_collision_checked=False))
         except Exception as exc:
             metrics['outcome']=getattr(exc,'outcome','FAILED')
@@ -720,6 +754,12 @@ class GuardedMeasurementAdapter:
             if now-stable_start>=self.g['baseline_timeout_s']:raise PointMeasurementError('UNSTABLE_BASELINE','기준 힘 안정화 실패')
             self.sleep(self.g['poll_s'])
 
+    def _joint_error(self,o,target):
+        """사전 계산한 관절 해와의 차이. TRANSIT 을 IK 없이 넘긴 목표는 Cartesian 도달만 판정한다."""
+        expected=self.expected[tuple(target)]
+        if expected is None:return 0.
+        return max(abs(a-b) for a,b in zip(o['joints_deg'],expected))
+
     def execute_measurement_step(self,step,profile,context,timeout_s):
         deadline=self.clock()+min(profile['timeout_s'],timeout_s)
         o=self._read();self._check(o,profile,context,deadline,step)
@@ -742,7 +782,7 @@ class GuardedMeasurementAdapter:
             # PROBE = 정밀 힘 측정. 기준 힘·접촉 판정은 이 분기에서만 수행한다.
             bias,start,o=self._probe_stationary_baseline(step,profile,context,deadline,start)
         # TRANSIT = 좌표 이동. 기준 힘/접촉 판정 없이 안전 감시(_check)와 도달 확인만 한다.
-        elif math.dist(start[:3],target[:3])<=self.g['skip_position_m'] and rotation_distance(start,target)<=math.radians(self.g['skip_angle_deg']) and max(abs(a-b) for a,b in zip(o['joints_deg'],self.expected[tuple(target)]))<=self.g['completion_joint_deg']:
+        elif math.dist(start[:3],target[:3])<=self.g['skip_position_m'] and rotation_distance(start,target)<=math.radians(self.g['skip_angle_deg']) and self._joint_error(o,target)<=self.g['completion_joint_deg']:
             return StepResult('SUCCEEDED',observed_state={'stop_confirmed':True})
         start_native=o['posx'][:]
         line_limit=self.g['line_error_mm'] if probe else self._move_line_limit(step,start_native,self.native_targets[tuple(target)])
@@ -847,7 +887,7 @@ class GuardedMeasurementAdapter:
                     checked=self.scene_check([step],self.workcell,o)
                     if checked.get('path_checked') is not True or checked.get('probe_envelopes_checked') is not True:
                         raise MeasurementError('SCENE_REJECTED','상공 실제 위치에서 남은 이동 간섭 검사 실패')
-                joint_error=max(abs(a-b) for a,b in zip(o['joints_deg'],self.expected[tuple(target)]))
+                joint_error=self._joint_error(o,target)
                 complete=moved and o['robot_state']==1 and o['motion_status']==0 and math.dist(current[:3],target[:3])<=self.workcell['pose_tolerance_m'] and rotation_distance(current,target)<=self.workcell['angle_tolerance_rad'] and joint_error<=self.g['completion_joint_deg']
                 if complete:
                     if stable is None:stable=now

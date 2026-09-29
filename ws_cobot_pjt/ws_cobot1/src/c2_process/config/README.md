@@ -3,6 +3,7 @@
 2026-09-25 main `987a3b7` 확인 기준 `workcell.yaml`·`tools.yaml` 실행 파일은 아직 없다. 현재 REAL 준비는 명시한 준비 JSON, REAL 실행 후보는 별도 배포 실행 프로파일 JSON을 사용한다. [운영 결정과 미확정 값](../../../../docs/C2_FIXED_DRILL_20260919.md)을 기준으로 담당자가 검증된 설정을 작성한다.
 
 - 측정 설정: `workpiece_real_trial_0921.json`. PR #82가 `feat/engraving-force-hold-return-home`에 병합된 `c64fc6d`의 전체 측정 정책을 main `8409fc6`과 로컬 통합했다. start_gap 5 mm, side_search 10 mm, baseline lead-in 4.05 mm, 이동 복구 최대 3회, 조건부 비접촉 상한 15 N을 담당자 코드와 함께 적용한다.
+- 측정 설정의 `guards.transit_ik_preflight: false`는 접촉 사이 이동(TRANSIT)의 애플리케이션 레벨 IK/FK 표본 검사를 끈다. 현장 간섭 검사·TCP/하중 대조·접촉 구간 IK/FK·실행 중 안전 감시는 유지한다. `true`로 바꾸거나 키를 지우면 전체 검사로 돌아간다. 속도·허용오차·측정 각도는 바꾸지 않았고 실기 검증은 미수행이다. [필드 의미](../WORKPIECE_CALIBRATION.md)
 - 2026-09-23 15:02 **8/8** 원본으로 다음 측정 seed 중심·반지름과 윗면 접근·이탈 XY를 갱신했다. 기존 HOME·Z 탐색·trial_scene 경계와 hard_force_n은 유지한다. 새 seed로 바뀐 계획의 실기 검증은 별도다.
 - 실행 프로파일: `real_execution_profile_20260923.json`. 반지름 33.89996884310031 mm, 축 바닥 `[0.42325530708859205, 0.00032844108604387424, 0.06576846313740473]` m. 운영 시 새 MEASURE→BIND에서 실측 기하를 다시 채운다. 조각 속도·깊이·ENTRY 정책·타임아웃은 유지한다.
 - [원본 및 초기 갱신 기록](../../../../docs/validation/2026-09-23-eight-point-config.md), [통합 실행 준비 기록](../../../../docs/validation/2026-09-23-real-integration-ready.md)을 참조한다. 로컬 통합본이며 main 병합·실기 통합 완료로 표시하지 않는다.

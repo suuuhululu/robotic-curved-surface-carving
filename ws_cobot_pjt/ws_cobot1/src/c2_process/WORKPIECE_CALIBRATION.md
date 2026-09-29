@@ -318,6 +318,20 @@ HMI는 이벤트를 ID/sequence 기준으로 저장해야 새로고침 후에도
   이 함수가 HMI 최종 파일 바이트의 해시를 발급/검증하지 않는다. 수신부가 파일을 확인한다.
 - `plans`: 실제 검사에 넘긴 계획·설정 객체의 내부 SHA-256과 검사 보고.
   이 해시를 HMI 파일의 profile_sha256으로 대신 쓰지 않는다.
+- `plans[].report`의 검사 범위 필드:
+
+  | 필드 | 의미 |
+  | --- | --- |
+  | `all_segments_checked` | 모든 구간이 **그 종류에 정해진 검사**를 통과했다. 공통 검사는 현장 간섭·TCP/하중·소유권이다. 모든 구간을 IK/FK로 검사했다는 뜻이 아니다. |
+  | `transit_ik_fk_checked` | 접촉 사이의 이동(TRANSIT, `MOVE`) 구간을 제어기 IK/FK 표본으로 검사했는지. 설정 `guards.transit_ik_preflight`를 따른다. |
+  | `probe_ik_fk_checked` | 접촉 구간(`PROBE`)을 제어기 IK/FK 표본으로 검사했는지. 항상 `true`다. |
+  | `transit_segments` / `probe_segments` | 이번 계획의 구간 수. |
+  | `validation_level` | `SAMPLED_CONTROLLER_IK_FK_AND_EXTERNAL_SCENE_CHECK`(전체 검사) 또는 `SCENE_CHECK_WITH_PROBE_ONLY_IK_FK`(TRANSIT 단순 이동). |
+
+  `guards.transit_ik_preflight=false`이면 TRANSIT은 고정 Cartesian 목표를 그대로 직선 이동하며
+  이동 전 관절 한계·특이점·IK 불연속 검사를 하지 않는다. 실행 중 관절 범위·힘 한계·이동 시작·
+  정지 확인과 Cartesian 도착 판정은 유지한다. 도착 판정의 관절값 대조는 TRANSIT에서 빠진다.
+  키가 없거나 `true`이면 기존 전체 검사다. 이 설정의 실기 검증은 별도다.
 - `target_rechecks`: 이동·점 복구 재시도 때 **실패한 현재 목표 한 구간만** 다시 검사한 기록
   (`label`, `checked_at`, 검사 보고). 복구는 남은 계획 전체를 다시 preflight 하지 않으며
   `plans`에는 계획 단위 검사(홈 진입·윗면·옆면·홈 복귀)만 쌓인다. 재시도 횟수 한도,

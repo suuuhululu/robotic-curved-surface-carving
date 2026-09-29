@@ -222,6 +222,7 @@
   "operator_ack_valid_s": 900.0,
   "standalone_operator_acknowledged": false,
   "guards": {
+    "transit_ik_preflight": false,
     "angular_acc_deg_s2": 40.0,
     "angular_speed_deg_s": 20.0,
     "baseline_drift_n": 0.2,
@@ -275,5 +276,6 @@
     "stop_stable_s": 0.2,
     "overhead_line_error_mm": 1.0
   },
+  "transit_preflight_source": "2026-09-29 측정 이동 단순화: 접촉 사이의 이동(TRANSIT)은 반복 사용한 고정 Cartesian 목표를 그대로 직선 이동하며 애플리케이션 레벨 IK/FK 표본 검사를 하지 않는다. 현장 간섭 검사·TCP/하중 대조·접촉 구간 IK/FK·실행 중 관절 범위/힘/정지 감시는 유지한다. true 로 바꾸거나 키를 지우면 기존 전체 검사로 돌아간다. 이 설정의 실기 검증은 미수행.",
   "escape_profile_source": "9/21 user-directed separation: near-surface approach/probe/retract keep 10 N; cleared escape uses existing air speed 60 mm/s, acceleration 60 mm/s^2, absolute 15 N software stop only; no soft/persistence force test. Native controller protection unchanged. Full motion profile verified in attempt 9: 8 points and final retreat succeeded in 299.295 s. Overall timeout subsequently extended to 360 s; this extension itself is not an additional REAL run."
 }

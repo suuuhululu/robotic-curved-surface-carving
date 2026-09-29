@@ -105,16 +105,35 @@ def test_motion_incomplete_also_retries_single_target(counters):
     assert counters['recheck'] == [TARGET_LABEL]
 
 
+def full_transit_check(config):
+    config['guards']['transit_ik_preflight'] = True
+
+
 def test_recovery_adds_only_one_segment_of_controller_ik_fk(counters):
+    """TRANSIT 도 IK/FK 로 검사하는 설정에서는 복구 때 한 구간 분량만 늘어난다."""
+    run_case(config_edit=full_transit_check)
+    clean_ik, clean_fk = counters['ik'], counters['fk']
+    counters['ik'] = counters['fk'] = 0
+    r, _, _, _ = run_case(offset_mm=.6, config_edit=full_transit_check)
+    assert r.ok
+    extra_ik, extra_fk = counters['ik'] - clean_ik, counters['fk'] - clean_fk
+    # 옆면 48구간 전체 분량과 비교해 충분히 작아야 한다.
+    assert 0 < extra_ik < clean_ik * .1, (extra_ik, clean_ik)
+    assert 0 < extra_fk < clean_fk * .1, (extra_fk, clean_fk)
+    assert r.observed_state['target_rechecks'][0]['report']['transit_ik_fk_checked'] is True
+
+
+def test_simple_transit_recovery_adds_no_controller_ik_fk(counters):
+    """배포 설정(TRANSIT 단순 이동)에서는 복구 재검사가 현장 간섭 검사만 한다."""
     run_case()
     clean_ik, clean_fk = counters['ik'], counters['fk']
     counters['ik'] = counters['fk'] = 0
-    r, _, _, _ = run_case(offset_mm=.6)
-    assert r.ok
-    extra_ik, extra_fk = counters['ik'] - clean_ik, counters['fk'] - clean_fk
-    # 한 구간 재검사 분량만 늘어난다. 옆면 48구간 전체 분량과 비교해 충분히 작아야 한다.
-    assert 0 < extra_ik < clean_ik * .1, (extra_ik, clean_ik)
-    assert 0 < extra_fk < clean_fk * .1, (extra_fk, clean_fk)
+    r, _, attempts, _ = run_case(offset_mm=.6)
+    assert r.ok and attempts[TARGET_LABEL] == 2
+    assert (counters['ik'], counters['fk']) == (clean_ik, clean_fk)
+    report = r.observed_state['target_rechecks'][0]['report']
+    assert report['validation_level'] == 'SINGLE_TARGET_RECHECK_SCENE_ONLY'
+    assert report['transit_ik_fk_checked'] is False and report['probe_envelopes_checked'] is True
 
 
 def test_recheck_rejects_a_target_that_was_never_prechecked():
