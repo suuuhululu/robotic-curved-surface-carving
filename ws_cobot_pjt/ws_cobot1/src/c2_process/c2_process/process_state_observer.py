@@ -30,6 +30,9 @@ class ProcessStateObserver:
         self.lock = threading.RLock()
         self.pending = None
         self.closed = False
+        self.pause_depth = 0
+        self.recovery_pending = False
+        self.recovery_deadline = 0.0
         self.group = MutuallyExclusiveCallbackGroup()
         self.clients = {}
         for key, endpoint, kind in (
@@ -54,7 +57,7 @@ class ProcessStateObserver:
 
     def _tick(self):
         with self.lock:
-            if self.closed:return
+            if self.closed or self.pause_depth:return
             if self.pending is not None:
                 if time.monotonic()-self.pending['started'] < self.timeout:return
                 self._discard()
@@ -74,6 +77,49 @@ class ProcessStateObserver:
             except Exception:
                 self._discard()
                 self._unknown()
+
+    def pause(self):
+        """고부하 장치 조회 구간에서 중복 상태 조회를 일시 중단한다.
+
+        중첩 호출을 허용하며, 진행 중인 조회 응답은 폐기하고 캐시는 즉시 UNKNOWN으로
+        바꾼다. 로봇 상태를 추측해 유지하지 않고 모션 명령에도 관여하지 않는다.
+        """
+        with self.lock:
+            if self.closed:
+                return False
+            self.pause_depth += 1
+            if self.pause_depth == 1:
+                self.recovery_pending = True
+                self.recovery_deadline = float('inf')
+                self._discard()
+                self._unknown()
+            return True
+
+    def resume(self):
+        """마지막 pause와 짝이 맞을 때 다음 타이머 주기부터 조회를 재개한다."""
+        with self.lock:
+            if self.closed or self.pause_depth == 0:
+                return False
+            self.pause_depth -= 1
+            if self.pause_depth == 0:
+                # 다음 0.2초 타이머와 한 묶음의 서비스 제한 시간을 보장하되,
+                # 드라이버가 회복하지 않으면 BIND가 무기한 남지 않게 한다.
+                self.recovery_deadline = time.monotonic() + self.timeout + 0.4
+            return self.pause_depth == 0
+
+    def defer_binding_invalidation(self, *, now=None):
+        """의도적 일시중단/첫 조회 복구 중에만 기존 BIND 삭제를 유예한다.
+
+        실행 가능 판정이 아니며, 제한시간 뒤에는 실패 관측을 그대로 반영한다.
+        """
+        with self.lock:
+            if self.closed or not self.recovery_pending:
+                return False
+            current = time.monotonic() if now is None else now
+            if self.pause_depth > 0 or current <= self.recovery_deadline:
+                return True
+            self.recovery_pending = False
+            return False
 
     def _received(self, batch, key, future):
         with self.lock:
@@ -103,6 +149,8 @@ class ProcessStateObserver:
                 self.cache.capture(state, None, self.max_age,
                     now=now, utc_ns=batch['utc_ns']+int((now-batch['started'])*1e9))
                 self.pending = None
+                self.recovery_pending = False
+                self.recovery_deadline = 0.0
             except Exception:
                 self._discard()
                 self._unknown()
@@ -112,6 +160,9 @@ class ProcessStateObserver:
         with self.lock:
             if self.closed:return
             self.closed = True
+            self.pause_depth = 0
+            self.recovery_pending = False
+            self.recovery_deadline = 0.0
             self._discard()
             self._unknown()
             self.node.destroy_timer(self.timer)

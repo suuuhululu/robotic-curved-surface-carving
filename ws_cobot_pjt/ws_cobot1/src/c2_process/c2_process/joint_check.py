@@ -13,6 +13,38 @@ from .robot_adapter import RobotAdapter, StepResult
 DEFAULT_LIMITS_DEG = [(-360.0, 360.0), (-95.0, 95.0), (-135.0, 135.0), (-360.0, 360.0), (-135.0, 135.0), (-360.0, 360.0)]
 
 
+class MemoizedIKAdapter:
+    """한 PRECHECK 안에서 완전히 같은 IK 요청의 제어기 재호출만 생략한다."""
+
+    def __init__(self, adapter):
+        self.adapter = adapter
+        self.cache = {}
+        self.requests = 0
+        self.service_calls = 0
+
+    @staticmethod
+    def _values(value):
+        if value is None:
+            return None
+        return tuple(value)
+
+    def inverse_kinematics(self, pose, tool_offset_m, ref_joints_deg):
+        self.requests += 1
+        key = (self._values(pose), self._values(tool_offset_m),
+               self._values(ref_joints_deg))
+        if key not in self.cache:
+            result = self.adapter.inverse_kinematics(
+                pose, tool_offset_m, ref_joints_deg)
+            self.service_calls += 1
+            self.cache[key] = None if result is None else tuple(result)
+        cached = self.cache[key]
+        return None if cached is None else list(cached)
+
+    def statistics(self):
+        return {"requests": self.requests, "service_calls": self.service_calls,
+                "cache_hits": self.requests - self.service_calls}
+
+
 def _unwrap(prev_deg: float, cur_deg: float) -> float:
     """ikin 이 ±180 로 접어 준 J6 를 이전 값과 이어지게 펼친다 (연속 경로에서 360° 점프 방지)."""
     # fmod는 반복 없이 처리하며 기존의 +180/-180 방향을 보존한다.

@@ -98,6 +98,9 @@ def test_planner_selects_ik_valid_relative_height_without_motion():
     assert len(result.observed_state["rejected_candidates"]) == 2
     assert adapter.moves == []
     assert adapter.ik_calls
+    assert result.observed_state["ik_requests"]["cache_hits"] > 0
+    assert (result.observed_state["ik_requests"]["service_calls"]
+            < result.observed_state["ik_requests"]["requests"])
     assert plan["source_binding"]["profile_snapshot_id"] == "snapshot-1"
 
 

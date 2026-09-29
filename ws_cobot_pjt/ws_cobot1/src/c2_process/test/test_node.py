@@ -1027,6 +1027,14 @@ def test_binding_invalidation_is_deferred_only_during_active_precheck():
     assert not defer_prepared_binding_invalidation("RUNNING", "PRECHECK", None)
 
 
+def test_binding_invalidation_is_bounded_while_observer_recovers():
+    from types import SimpleNamespace as NS
+    recovering = NS(defer_binding_invalidation=lambda: True)
+    expired = NS(defer_binding_invalidation=lambda: False)
+    assert defer_prepared_binding_invalidation("IDLE", "PRECHECK", None, recovering)
+    assert not defer_prepared_binding_invalidation("IDLE", "PRECHECK", None, expired)
+
+
 @pytest.mark.parametrize('state_code', [3, 5, 6, 9, 10])
 def test_prepared_binding_observation_rejects_confirmed_stop_states(state_code):
     from types import SimpleNamespace as NS

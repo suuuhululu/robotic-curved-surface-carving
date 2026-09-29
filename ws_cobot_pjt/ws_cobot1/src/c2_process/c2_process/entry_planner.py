@@ -11,7 +11,7 @@ import json
 import math
 from typing import Mapping
 
-from .joint_check import check_path_joints
+from .joint_check import MemoizedIKAdapter, check_path_joints
 from .engraving_workspace import check_waypoints
 from .robot_adapter import StepResult, apply_tool_offset
 
@@ -241,6 +241,8 @@ def plan_entry_path(path, workcell, adapter, state, tool_offset_m, limits_deg,
     except (KeyError, TypeError, ValueError, OverflowError) as exc:
         return StepResult("FAILED", "NOT_READY", str(exc), "entry_planning")
     accepted, rejected = [], []
+    ik_adapter = (MemoizedIKAdapter(adapter)
+                  if joint_check_fn is check_path_joints else adapter)
     for candidate in candidates:
         geometry = _geometry_check(candidate, workcell, tool_offset_m)
         if not geometry.ok:
@@ -257,12 +259,12 @@ def plan_entry_path(path, workcell, adapter, state, tool_offset_m, limits_deg,
         joint_kwargs = dict(limits_deg=limits_deg, j6_margin_deg=j6_margin_deg)
         if joint_check_fn is check_path_joints:
             joint_kwargs["cancel"] = cancel
-        joints = joint_check_fn(sampled, adapter, tool_offset_m, state.joints_rad,
+        joints = joint_check_fn(sampled, ik_adapter, tool_offset_m, state.joints_rad,
                                 **joint_kwargs)
         if not joints.ok:
             rejected.append({"candidate_id": candidate["candidate_id"], "reason": joints.message})
             continue
-        continuity = _continuity_check(candidate, adapter, tool_offset_m,
+        continuity = _continuity_check(candidate, ik_adapter, tool_offset_m,
                                        state.joints_rad, limits_deg, cancel)
         if not continuity.ok:
             if continuity.outcome == "STOPPED":
@@ -287,7 +289,10 @@ def plan_entry_path(path, workcell, adapter, state, tool_offset_m, limits_deg,
                       "entry_planning", {"entry_plan": selected,
                                          "entry_plan_sha256": selected["entry_plan_sha256"],
                                          "accepted_candidates": len(accepted),
-                                         "rejected_candidates": rejected})
+                                         "rejected_candidates": rejected,
+                                         "ik_requests": ik_adapter.statistics()
+                                         if isinstance(ik_adapter, MemoizedIKAdapter)
+                                         else None})
 
 
 def execute_entry_plan(plan, adapter, context):

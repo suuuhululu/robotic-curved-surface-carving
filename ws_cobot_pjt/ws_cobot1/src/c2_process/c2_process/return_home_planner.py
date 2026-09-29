@@ -19,7 +19,7 @@ from .engraving import (
 )
 from .engraving_workspace import check_waypoints, validate_workspace
 from .entry_planner import _interpolate, _pose, _policy, _quat_angle_deg, _vector
-from .joint_check import _unwrap, check_path_joints
+from .joint_check import MemoizedIKAdapter, _unwrap, check_path_joints
 from .robot_adapter import StepResult, apply_tool_offset
 
 
@@ -275,9 +275,11 @@ def plan_return_home_path(execution_plan, workcell, adapter, state, tool_offset_
     except (KeyError, TypeError, ValueError, OverflowError) as exc:
         return StepResult("FAILED", "NOT_READY", str(exc), "return_home_planning")
 
+    ik_adapter = (MemoizedIKAdapter(adapter)
+                  if joint_check_fn is check_path_joints else adapter)
     prefix = _prefix_waypoints(entry_plan, execution_plan)
     predicted, final_joints = _predicted_end_joints(
-        prefix, adapter, tool_offset_m, state.joints_rad, cancel)
+        prefix, ik_adapter, tool_offset_m, state.joints_rad, cancel)
     if not predicted.ok:
         return predicted
 
@@ -292,7 +294,7 @@ def plan_return_home_path(execution_plan, workcell, adapter, state, tool_offset_
         kwargs = dict(limits_deg=limits_deg, j6_margin_deg=j6_margin_deg)
         if joint_check_fn is check_path_joints:
             kwargs["cancel"] = cancel
-        joints = joint_check_fn(return_path, adapter, tool_offset_m,
+        joints = joint_check_fn(return_path, ik_adapter, tool_offset_m,
                                 [math.radians(v) for v in final_joints], **kwargs)
         if not isinstance(joints, StepResult):
             return StepResult("UNKNOWN", "INVALID_RESULT",
@@ -304,7 +306,7 @@ def plan_return_home_path(execution_plan, workcell, adapter, state, tool_offset_
                              "reason": joints.message})
             continue
         continuity = _continuity_check(
-            candidate, adapter, tool_offset_m, list(final_joints), limits_deg, cancel)
+            candidate, ik_adapter, tool_offset_m, list(final_joints), limits_deg, cancel)
         if not continuity.ok:
             if continuity.outcome == "STOPPED":
                 return continuity
@@ -345,7 +347,9 @@ def plan_return_home_path(execution_plan, workcell, adapter, state, tool_offset_
         "return_home_planning",
         {"return_home_plan": selected,
          "return_home_plan_sha256": selected["return_home_plan_sha256"],
-         "rejected_candidates": rejected})
+         "rejected_candidates": rejected,
+         "ik_requests": ik_adapter.statistics()
+         if isinstance(ik_adapter, MemoizedIKAdapter) else None})
 
 
 def execute_return_home_plan(plan, adapter, context):
