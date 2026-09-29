@@ -1,5 +1,9 @@
 # 프로젝트 ROS 실행·설정 기록
 
+2026-09-29 이 PC의 `main_v11` 정렬·재시도 수정은 별도
+`install/main_v11` overlay로 빌드했다. 기존 설치본과 구분한 명령 및 원장 유지 방법은
+[로컬 검토 기록](../../docs/validation/2026-09-29-main-v11-local-review.md)의 실행 절차를 따른다.
+
 2026-09-25 갱신: main `987a3b7`의 HMI·경로·공정 연결, entry 및 검사된 HOME 복귀 기준이다.
 현재 실행 흐름은 [인터페이스 안내](../../docs/INTERFACE_GUIDE.md), 파일·노드 책임은
 [시스템 구조](../../docs/SYSTEM_STRUCTURE.md)를 따른다. 날짜별 과거 PR 문서는 당시 기록이며

@@ -703,7 +703,8 @@ class GuardedMeasurementAdapter:
                 if tracking_m>tracking_limit or tracking_angle>math.radians(self.g['skip_angle_deg']):
                     samples.clear()
                     if now-stable_start>=self.g['baseline_timeout_s']:
-                        raise PointMeasurementError('UNSTABLE_BASELINE','기준 힘 수집 전 실제/지시 TCP 정착 미확인')
+                        raise PointMeasurementError('UNSTABLE_BASELINE','기준 힘 수집 전 실제/지시 TCP 정착 미확인',
+                                                    probe_command_sent=False)
                     self.sleep(self.g['poll_s'])
                     continue
             along=sum(a*b for a,b in zip(step['direction'],o['force_n']))
@@ -717,7 +718,8 @@ class GuardedMeasurementAdapter:
                     self._emit_trace('stationary_baseline',dict(label=step['label'],bias_n=bias,settle_s=now-stable_start,
                         tracking_limit_m=self.g.get('baseline_tracking_position_m',self.g['skip_position_m'])))
                     return bias,start,o
-            if now-stable_start>=self.g['baseline_timeout_s']:raise PointMeasurementError('UNSTABLE_BASELINE','기준 힘 안정화 실패')
+            if now-stable_start>=self.g['baseline_timeout_s']:
+                raise PointMeasurementError('UNSTABLE_BASELINE','기준 힘 안정화 실패',probe_command_sent=False)
             self.sleep(self.g['poll_s'])
 
     def execute_measurement_step(self,step,profile,context,timeout_s):
