@@ -8,6 +8,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from c2_process.robot_adapter import MockRobotAdapter, pose_to_posx, posx_to_pose, tool_axis_in_base  # noqa: E402
 
 PROFILE = dict(id="travel", vel_mm_s=26.0, acc_mm_s2=50.0, completion_timeout_s=30.0)
+JOINTX_PROFILE = dict(id="jointx_entry_trial", vel_deg_s=20.0,
+                      acc_deg_s2=40.0, joint_tol_deg=1.0,
+                      completion_timeout_s=90.0)
 
 
 def test_unit_roundtrip():
@@ -59,6 +62,30 @@ def test_spline_point_limit():
     ad = MockRobotAdapter()
     r = ad.move_spline([[0.4, 0, 0.3, 0, 1, 0, 0]] * 81, "c2_base", PROFILE, 30.0, None)
     assert r.outcome == "FAILED" and r.error_code == "INVALID_INPUT"
+
+
+def test_jointx_mock_uses_separate_profile_and_reports_actual_space():
+    ad = MockRobotAdapter()
+    target = [0.4, 0.0, 0.3, 0.0, 1.0, 0.0, 0.0]
+    expected = [1.0, 2.0, 30.0, 4.0, 25.0, 6.0]
+
+    result = ad.move_jointx(target, 3, "c2_base", JOINTX_PROFILE,
+                            JOINTX_PROFILE["completion_timeout_s"], None,
+                            expected_joints_deg=expected)
+
+    assert result.ok
+    assert result.observed_state["commanded_solution_space"] == 3
+    assert result.observed_state["actual_solution_space"] == 3
+    assert result.observed_state["actual_joints_deg"] == expected
+    call = next(item for item in ad.calls if item["fn"] == "move_jointx")
+    assert call["vel_deg_s"] == 20.0 and call["acc_deg_s2"] == 40.0
+
+
+def test_jointx_mock_rejects_cartesian_profile():
+    ad = MockRobotAdapter()
+    result = ad.move_jointx(ad.pose, 1, "c2_base", PROFILE, 30.0, None,
+                            expected_joints_deg=[0.0] * 6)
+    assert (result.outcome, result.error_code) == ("FAILED", "INVALID_INPUT")
 
 
 if __name__ == "__main__":

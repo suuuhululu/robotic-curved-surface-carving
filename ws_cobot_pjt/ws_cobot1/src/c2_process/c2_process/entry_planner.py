@@ -11,7 +11,8 @@ import json
 import math
 from typing import Mapping
 
-from .joint_check import check_path_joints, evaluate_path_joints
+from .joint_check import (candidate_diagnostic_window, check_path_joints,
+                          diagnose_path_joint_candidates, evaluate_path_joints)
 from .engraving_workspace import check_waypoints
 from .robot_adapter import StepResult, apply_tool_offset
 
@@ -138,8 +139,11 @@ def generate_entry_candidates(path, workcell, current_pose, tool_offset_m, motio
         entry_tcp = list(approach_tcp)
         entry_tcp[2] = float(workcell["top_z_m"]) + clearance
         entry_tip = apply_tool_offset(entry_tcp, tool_offset_m, +1)
-        samples = (_interpolate(list(current_pose), entry_tip, policy["sample_m"], policy["sample_deg"])
-                   + _interpolate(entry_tip, approach, policy["sample_m"], policy["sample_deg"]))
+        to_entry = _interpolate(list(current_pose), entry_tip,
+                                policy["sample_m"], policy["sample_deg"])
+        to_approach = _interpolate(entry_tip, approach,
+                                   policy["sample_m"], policy["sample_deg"])
+        samples = to_entry + to_approach
         candidates.append({
             "candidate_id": f"entry-{index + 1:03d}",
             "frame_id": "c2_base",
@@ -149,6 +153,7 @@ def generate_entry_candidates(path, workcell, current_pose, tool_offset_m, motio
             "first_approach_pose": approach,
             "targets": [entry_tip],
             "validation_waypoints": samples,
+            "entry_sample_index": len(to_entry) - 1,
             "tcp_clearance_above_top_m": clearance,
             "policy": policy,
             "source_binding": source_binding,
@@ -227,15 +232,97 @@ def _continuity_check(candidate, adapter, tool_offset_m, current_joints_rad, lim
                        "checked_samples": len(candidate["validation_waypoints"])})
 
 
+def _fixed_space_entry_check(candidate, adapter, tool_offset_m, current_joints_rad,
+                             limits_deg, j6_margin_deg, solution_space, cancel):
+    """선택 space를 ENTRY 전체 표본에 고정해 상공 시험 계획을 만든다."""
+    query = getattr(adapter, "inverse_kinematics_in_space", None)
+    if not callable(query):
+        return StepResult("FAILED", "VALIDATION_UNAVAILABLE",
+                          "지정 space IK 조회 API 없음", "entry_check"), []
+    previous = [math.degrees(value) for value in current_joints_rad]
+    trajectory = []
+    jmin, jmax = list(previous), list(previous)
+    min_j3 = min_j5 = min_joint_margin = float("inf")
+    try:
+        for index, pose in enumerate(candidate["validation_waypoints"]):
+            if cancel is not None and cancel.is_set():
+                return StepResult("STOPPED", "NONE", "고정 space 검사 취소",
+                                  "entry_check"), trajectory
+            values = query(pose, tool_offset_m, solution_space)
+            if not _vector(values, 6):
+                return StepResult(
+                    "FAILED", "NOT_READY",
+                    f"고정 space {solution_space} IK 실패: sample {index}",
+                    "entry_check", {"sample_index": index,
+                                    "solution_space": solution_space}), trajectory
+            joints = [float(value) for value in values]
+            delta6 = math.fmod(joints[5] - previous[5], 360.0)
+            if delta6 > 180.0:
+                delta6 -= 360.0
+            elif delta6 < -180.0:
+                delta6 += 360.0
+            joints[5] = previous[5] + delta6
+            margins = []
+            for joint, (low, high) in enumerate(limits_deg):
+                margin = j6_margin_deg if joint == 5 else 0.0
+                remaining = min(joints[joint] - low - margin,
+                                high - margin - joints[joint])
+                margins.append(remaining)
+                if remaining < 0:
+                    return StepResult(
+                        "FAILED", "VALIDATION_FAILED",
+                        f"고정 space {solution_space} J{joint + 1} 한계 초과",
+                        "entry_check", {"sample_index": index,
+                                        "joint": joint + 1,
+                                        "value_deg": joints[joint]}), trajectory
+            j3 = abs(joints[2])
+            j5 = min(abs(joints[4]), abs(180.0 - abs(joints[4])))
+            step = max(abs(a - b) for a, b in zip(joints, previous))
+            policy = candidate["policy"]
+            if (j3 < policy["min_j3_abs_deg"]
+                    or j5 < policy["min_j5_margin_deg"]
+                    or step > policy["max_joint_step_deg"]):
+                return StepResult(
+                    "FAILED", "VALIDATION_FAILED",
+                    f"고정 space {solution_space} 연속성/특이점 기준 실패: sample {index}",
+                    "entry_check", {"sample_index": index, "j3_abs_deg": j3,
+                                    "j5_margin_deg": j5,
+                                    "max_joint_step_deg": step}), trajectory
+            for joint in range(6):
+                jmin[joint] = min(jmin[joint], joints[joint])
+                jmax[joint] = max(jmax[joint], joints[joint])
+            min_j3, min_j5 = min(min_j3, j3), min(min_j5, j5)
+            min_joint_margin = min(min_joint_margin, *margins)
+            trajectory.append(joints)
+            previous = joints
+    except Exception as exc:
+        return StepResult("UNKNOWN", "COMMUNICATION_LOST",
+                          f"고정 space IK 조회 실패: {type(exc).__name__}",
+                          "entry_check"), trajectory
+    return StepResult(
+        "SUCCEEDED", "NONE", f"고정 space {solution_space} ENTRY 전체 표본 통과",
+        "entry_check", {
+            "selected_solution_space": solution_space,
+            "checked_samples": len(trajectory),
+            "joints_min_deg": [round(value, 3) for value in jmin],
+            "joints_max_deg": [round(value, 3) for value in jmax],
+            "minimum_joint_margin_deg": round(min_joint_margin, 3),
+            "minimum_j3_abs_deg": round(min_j3, 3),
+            "minimum_j5_margin_deg": round(min_j5, 3),
+        }), trajectory
+
+
 def _plan_digest(plan):
-    value = {key: value for key, value in plan.items() if key != "entry_plan_sha256"}
+    value = {key: value for key, value in plan.items()
+             if key not in ("entry_plan_sha256", "jointx_trial_plan_sha256")}
     return hashlib.sha256(json.dumps(value, sort_keys=True, allow_nan=False,
                                     separators=(",", ":")).encode()).hexdigest()
 
 
 def plan_entry_path(path, workcell, adapter, state, tool_offset_m, limits_deg,
                     j6_margin_deg, motion_profiles, cancel=None,
-                    joint_check_fn=check_path_joints):
+                    joint_check_fn=check_path_joints, diagnose_candidates=False,
+                    on_candidate_diagnostic_start=None):
     """후보를 만들고 실제 IK 조건으로 검사해 하나를 확정한다. 모션 명령은 보내지 않는다."""
     try:
         if (state is None or state.quality != "VALID" or not _pose(state.tcp_pose)
@@ -248,6 +335,7 @@ def plan_entry_path(path, workcell, adapter, state, tool_offset_m, limits_deg,
     accepted, rejected = [], []
     total_ik_calls = 0
     total_ik_elapsed_s = 0.0
+    diagnostic_target = None
     for candidate in candidates:
         geometry = _geometry_check(candidate, workcell, tool_offset_m)
         if not geometry.ok:
@@ -277,6 +365,21 @@ def plan_entry_path(path, workcell, adapter, state, tool_offset_m, limits_deg,
                                     **joint_kwargs)
         if not joints.ok:
             rejected.append({"candidate_id": candidate["candidate_id"], "reason": joints.message})
+            if (diagnose_candidates and joint_evaluation is not None
+                    and diagnostic_target is None
+                    and (joints.error_code == "VALIDATION_FAILED"
+                         or (joints.error_code == "NOT_READY"
+                             and joints.message.startswith("IK 실패:")))):
+                scope = candidate_diagnostic_window(sampled, joints.observed_state)
+                if scope is not None:
+                    scoped, global_start, metadata = scope
+                    reference = list(state.joints_rad)
+                    if global_start > 0 and len(joint_evaluation.joints_deg) >= global_start:
+                        reference = [math.radians(value)
+                                     for value in joint_evaluation.joints_deg[global_start - 1]]
+                    diagnostic_target = (candidate, scoped, reference, dict(
+                        metadata, phase="ENTRY",
+                        candidate_id=candidate["candidate_id"]))
             continue
         continuity = _continuity_check(candidate, adapter, tool_offset_m,
                                        state.joints_rad, limits_deg, cancel,
@@ -298,8 +401,78 @@ def plan_entry_path(path, workcell, adapter, state, tool_offset_m, limits_deg,
                          candidate["tcp_clearance_above_top_m"]]
         accepted.append(plan)
     if not accepted:
+        observed = {"rejected_candidates": rejected,
+                    "ik_metrics": {
+                        "inverse_kinematics_calls": total_ik_calls,
+                        "elapsed_s": total_ik_elapsed_s,
+                    }}
+        if diagnostic_target is not None:
+            candidate, scoped, reference, metadata = diagnostic_target
+            if callable(on_candidate_diagnostic_start):
+                on_candidate_diagnostic_start(metadata)
+            try:
+                diagnostic = diagnose_path_joint_candidates(
+                    scoped, adapter, tool_offset_m, reference, limits_deg,
+                    j6_margin_deg, cancel=cancel,
+                    joint_constraints={
+                        key: candidates[0]["policy"][key] for key in
+                        ("min_j3_abs_deg", "min_j5_margin_deg",
+                         "max_joint_step_deg")})
+            except Exception as exc:
+                diagnostic = {
+                    "mode": "DIAGNOSTIC_ONLY", "status": "INTERNAL_ERROR",
+                    "reason": type(exc).__name__,
+                    "used_for_execution_approval": False,
+                    "cartesian_solution_space_verified": False,
+                }
+            diagnostic["scope"] = metadata
+            observed["ik_candidate_diagnostic"] = diagnostic
+            safe_spaces = diagnostic.get("selected_solution_spaces") or []
+            if (diagnostic.get("status") == "SUCCEEDED"
+                    and diagnostic.get("solution_space_switches") == 0
+                    and len(safe_spaces) == 1):
+                selected_space = safe_spaces[0]
+                fixed_check, fixed_trajectory = _fixed_space_entry_check(
+                    candidate, adapter, tool_offset_m, state.joints_rad,
+                    limits_deg, j6_margin_deg, selected_space, cancel)
+                observed["candidate_fallback"] = {
+                    "status": ("DRILL_OFF_OVERHEAD_TRIAL_REQUIRED"
+                               if fixed_check.ok else "FULL_ENTRY_CHECK_FAILED"),
+                    "selected_solution_space": selected_space,
+                    "move_jointx_engraving_approved": False,
+                    "reason": ("MoveJointx 상공 궤적·정지·실행 space 실기 미검증"
+                               if fixed_check.ok else fixed_check.message),
+                }
+                if not fixed_check.ok:
+                    observed["candidate_fallback"]["fixed_space_check"] = (
+                        fixed_check.observed_state)
+                else:
+                    entry_index = candidate["entry_sample_index"]
+                    trial_plan = copy.deepcopy(candidate)
+                    trial_plan.update(
+                        execution_mode="JOINTX_ENTRY_TRIAL_ONLY",
+                        selected_solution_space=selected_space,
+                        expected_entry_joints_deg=list(fixed_trajectory[entry_index]),
+                        fixed_space_check=fixed_check.observed_state,
+                        move_jointx_engraving_approved=False)
+                    trial_plan["jointx_trial_plan_sha256"] = _plan_digest(trial_plan)
+                    observed["jointx_entry_trial_plan"] = trial_plan
+                    observed["candidate_fallback"]["trial_plan_sha256"] = (
+                        trial_plan["jointx_trial_plan_sha256"])
+                if not fixed_check.ok:
+                    return StepResult(
+                        fixed_check.outcome,
+                        ("ENTRY_PATH_UNAVAILABLE" if fixed_check.outcome == "FAILED"
+                         else fixed_check.error_code),
+                        f"대체 space {selected_space} 전체 ENTRY 검사 실패: {fixed_check.message}",
+                        "entry_planning", observed)
+                return StepResult(
+                    "FAILED", "JOINTX_ENTRY_TRIAL_REQUIRED",
+                    (f"안전 대체 IK space {selected_space} 후보 발견; "
+                     "드릴 OFF 상공 MoveJointx 검증 전 조각 진입 차단"),
+                    "entry_planning", observed)
         return StepResult("FAILED", "ENTRY_PATH_UNAVAILABLE", "실행 가능한 상공 entry 후보 없음",
-                          "entry_planning", {"rejected_candidates": rejected})
+                          "entry_planning", observed)
     accepted.sort(key=lambda item: tuple(item["score"]), reverse=True)
     selected = accepted[0]
     selected["entry_plan_sha256"] = _plan_digest(selected)
@@ -356,3 +529,65 @@ def execute_entry_plan(plan, adapter, context):
                       {"entry_plan_sha256": plan["entry_plan_sha256"],
                        "candidate_id": plan["candidate_id"],
                        "completed_targets": len(plan["targets"])})
+
+
+def execute_jointx_entry_trial(plan, adapter, profile, cancel,
+                               *, drill_off_confirmed=False):
+    """정상 조각 Action과 분리된 비접촉 ENTRY 상공 시험 한 번만 실행한다."""
+    if drill_off_confirmed is not True:
+        return StepResult("FAILED", "OPERATOR_CONFIRMATION_REQUIRED",
+                          "드릴 OFF 명시 확인 필요", "jointx_entry_trial")
+    if (not isinstance(plan, Mapping)
+            or plan.get("execution_mode") != "JOINTX_ENTRY_TRIAL_ONLY"
+            or plan.get("move_jointx_engraving_approved") is not False
+            or plan.get("jointx_trial_plan_sha256") != _plan_digest(plan)):
+        return StepResult("FAILED", "PROFILE_MISMATCH",
+                          "고정된 MoveJointx 상공 시험 계획 불일치",
+                          "jointx_entry_trial")
+    if (not isinstance(profile, Mapping)
+            or profile.get("contract") != "c2-jointx-entry-trial-profile/1"
+            or profile.get("id") != "jointx_entry_trial"
+            or profile.get("trial_only") is not True
+            or profile.get("drill_off_required") is not True):
+        return StepResult("FAILED", "PROFILE_MISMATCH",
+                          "별도 trial-only jointx_entry_trial 관절 프로파일 필요",
+                          "jointx_entry_trial")
+    if cancel is not None and cancel.is_set():
+        return StepResult("STOPPED", "NONE", "상공 시험 전 취소",
+                          "jointx_entry_trial")
+    state = adapter.observe()
+    policy = plan.get("policy") or {}
+    if (state.quality != "VALID" or not _pose(state.tcp_pose)
+            or math.dist(state.tcp_pose[:3], plan["start_pose"][:3])
+                > policy.get("start_position_tolerance_m", -1)
+            or _quat_angle_deg(state.tcp_pose[3:7], plan["start_pose"][3:7])
+                > policy.get("start_angle_tolerance_deg", -1)):
+        return StepResult("FAILED", "ROBOT_STATE_CHANGED",
+                          "상공 시험 계획 후 시작 자세 변경",
+                          "jointx_entry_trial")
+    try:
+        timeout = float(profile["completion_timeout_s"])
+    except (KeyError, TypeError, ValueError):
+        return StepResult("FAILED", "INVALID_INPUT",
+                          "jointx_entry_trial 완료 제한 시간 오류",
+                          "jointx_entry_trial")
+    result = adapter.move_jointx(
+        plan["entry_pose"], plan["selected_solution_space"], plan["frame_id"],
+        dict(profile), timeout, cancel,
+        expected_joints_deg=plan["expected_entry_joints_deg"])
+    if not isinstance(result, StepResult):
+        return StepResult("UNKNOWN", "INVALID_RESULT",
+                          "MoveJointx 상공 시험 결과 형식 오류",
+                          "jointx_entry_trial")
+    observed = dict(result.observed_state)
+    observed.update(
+        jointx_trial_plan_sha256=plan["jointx_trial_plan_sha256"],
+        execution_mode="JOINTX_ENTRY_TRIAL_ONLY",
+        engraving_executed=False,
+        drill_off_confirmed=True)
+    if not result.ok:
+        return StepResult(result.outcome, result.error_code, result.message,
+                          "jointx_entry_trial", observed)
+    return StepResult("SUCCEEDED", "NONE",
+                      "드릴 OFF MoveJointx 상공 ENTRY 시험 완료; 조각 미실행",
+                      "jointx_entry_trial", observed)

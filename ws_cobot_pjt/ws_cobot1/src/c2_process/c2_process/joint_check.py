@@ -200,17 +200,24 @@ def candidate_diagnostic_window(path: Dict, observed_state: Mapping,
 def diagnose_path_joint_candidates(path: Dict, adapter: RobotAdapter,
                                     tool_offset_m: Optional[List[float]],
                                     ref_joints_rad: List[float], limits_deg: List,
-                                    j6_margin_deg: float = 0.0, cancel=None) -> Dict:
+                                    j6_margin_deg: float = 0.0, cancel=None,
+                                    joint_constraints: Optional[Mapping] = None) -> Dict:
     """전체 명시 waypoint의 다중 IK 후보열을 계산하는 읽기 전용 진단.
 
     선택 결과는 Cartesian 실행 승인에 사용하지 않는다. 각 waypoint의 유효 후보를
     연결해 solution-space 전환 수, 관절 이동량, J6 잔여 여유 순으로 비교한다.
     """
     started = time.monotonic()
+    constraints = dict(joint_constraints or {})
+    constraint_names = ("min_j3_abs_deg", "min_j5_margin_deg",
+                        "max_joint_step_deg")
     base = dict(mode="DIAGNOSTIC_ONLY", used_for_execution_approval=False,
                 cartesian_solution_space_verified=False, queried_waypoints=0,
                 candidate_query_calls=0, service_error_waypoints=0,
-                incomplete_query=False)
+                incomplete_query=False,
+                joint_constraints_applied={
+                    key: constraints.get(key) for key in constraint_names
+                    if key in constraints})
     query = getattr(adapter, "inverse_kinematics_candidates", None)
     if not callable(query):
         return dict(base, status="UNAVAILABLE", reason="CANDIDATE_API_UNAVAILABLE",
@@ -221,14 +228,18 @@ def diagnose_path_joint_candidates(path: Dict, adapter: RobotAdapter,
                    or any(type(v) not in (int, float) or not math.isfinite(v) for v in pair)
                    or pair[0] >= pair[1] for pair in limits_deg)
             or type(j6_margin_deg) not in (int, float)
-            or not math.isfinite(j6_margin_deg) or j6_margin_deg < 0):
+            or not math.isfinite(j6_margin_deg) or j6_margin_deg < 0
+            or any(type(constraints.get(key)) not in (int, float)
+                   or not math.isfinite(constraints[key]) or constraints[key] <= 0
+                   for key in constraint_names if key in constraints)):
         return dict(base, status="INVALID_INPUT", reason="INVALID_LIMIT_OR_REFERENCE",
                     elapsed_s=max(0.0, time.monotonic() - started))
     ref = [math.degrees(v) for v in ref_joints_rad]
     # score: space 전환 최소 → 전체 관절 이동 최소 → J6 최소 여유 최대.
     states = [dict(q=ref, space=None, switches=0, total_motion=0.0,
                    max_step=0.0, min_j6_margin=float("inf"), j6_min=ref[5],
-                   j6_max=ref[5], runs=[], hasher=hashlib.sha256())]
+                   j6_max=ref[5], min_j3_abs=float("inf"),
+                   min_j5_margin=float("inf"), runs=[], hasher=hashlib.sha256())]
     checked = 0
     service_error_waypoints = 0
     segments = path.get("segments") if isinstance(path, dict) else None
@@ -290,6 +301,16 @@ def diagnose_path_joint_candidates(path: Dict, adapter: RobotAdapter,
                         rejected += 1
                         continue
                     delta = [abs(q[j] - previous["q"][j]) for j in range(6)]
+                    j3_abs = abs(q[2])
+                    j5_margin = min(abs(q[4]), abs(180.0 - abs(q[4])))
+                    if (("min_j3_abs_deg" in constraints
+                            and j3_abs < constraints["min_j3_abs_deg"])
+                            or ("min_j5_margin_deg" in constraints
+                                and j5_margin < constraints["min_j5_margin_deg"])
+                            or ("max_joint_step_deg" in constraints
+                                and max(delta) > constraints["max_joint_step_deg"])):
+                        rejected += 1
+                        continue
                     remaining = min(q[5] - limits_deg[5][0] - j6_margin_deg,
                                     limits_deg[5][1] - j6_margin_deg - q[5])
                     switched = previous["space"] is not None and previous["space"] != space
@@ -308,6 +329,8 @@ def diagnose_path_joint_candidates(path: Dict, adapter: RobotAdapter,
                                  min_j6_margin=min(previous["min_j6_margin"], remaining),
                                  j6_min=min(previous["j6_min"], q[5]),
                                  j6_max=max(previous["j6_max"], q[5]),
+                                 min_j3_abs=min(previous["min_j3_abs"], j3_abs),
+                                 min_j5_margin=min(previous["min_j5_margin"], j5_margin),
                                  runs=runs, hasher=digest)
                     key = (space, round(q[5], 6))
                     score = (state["switches"], state["total_motion"],
@@ -348,6 +371,8 @@ def diagnose_path_joint_candidates(path: Dict, adapter: RobotAdapter,
                 j6_min_deg=round(selected["j6_min"], 3),
                 j6_max_deg=round(selected["j6_max"], 3),
                 minimum_j6_remaining_deg=round(selected["min_j6_margin"], 3),
+                minimum_j3_abs_deg=round(selected["min_j3_abs"], 3),
+                minimum_j5_margin_deg=round(selected["min_j5_margin"], 3),
                 max_joint_step_deg=round(selected["max_step"], 3),
                 total_joint_motion_deg=round(selected["total_motion"], 3),
                 sequence_sha256=selected["hasher"].hexdigest(),

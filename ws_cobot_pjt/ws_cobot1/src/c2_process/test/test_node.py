@@ -1205,7 +1205,8 @@ def test_ros_callbacks_publish_cached_signals_and_alarm_events(monkeypatch):
     diagnostic = StepResult('SUCCEEDED', observed_state={'ik_candidate_diagnostic': {
         'status': 'SUCCEEDED', 'selected_solution_spaces': [2],
         'j6_min_deg': -12., 'j6_max_deg': 174., 'minimum_j6_remaining_deg': 171.,
-        'failure_waypoint': None}})
+        'minimum_j3_abs_deg': 20., 'minimum_j5_margin_deg': 16.,
+        'failure_waypoint': None, 'scope': {'phase': 'ENTRY'}}})
     node.report_candidate_diagnostic_start(node.goal_values, config, {
         'segment_id': 'seg-1', 'window_start_index': 4, 'window_end_index': 14})
     node.report_precheck(node.goal_values, config, diagnostic)
@@ -1224,7 +1225,9 @@ def test_ros_callbacks_publish_cached_signals_and_alarm_events(monkeypatch):
         'DIAGNOSTIC', 'ALARM_RAISED']
     assert node.event_pub.sent[-4].code == 'IK_CANDIDATE_DIAGNOSTIC_STARTED'
     assert node.event_pub.sent[-3].code == 'IK_CANDIDATE_DIAGNOSTIC'
+    assert 'ENTRY IK 후보 진단' in node.event_pub.sent[-3].message
     assert 'space 2' in node.event_pub.sent[-3].message
+    assert 'J5 최소 여유 16.0°' in node.event_pub.sent[-3].message
     assert 'Cartesian 동일성 미검증' in node.event_pub.sent[-3].message
     assert node.event_pub.sent[-2].code == 'RETURN_HOME_CANDIDATE_DIAGNOSTIC'
     assert '[0.261, -0.031, 0.138]' in node.event_pub.sent[-2].message

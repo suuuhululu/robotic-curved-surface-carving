@@ -109,6 +109,33 @@ def test_candidate_diagnostic_selects_limit_compliant_alternative_without_approv
     assert len(report['sequence_sha256']) == 64
 
 
+def test_candidate_diagnostic_applies_entry_singularity_and_step_constraints():
+    class Candidates:
+        def inverse_kinematics_candidates(self, pose, offset, ref, cancel=None):
+            return dict(status="SUCCEEDED", candidates=[
+                dict(solution_space=0, joints_deg=[0., 0., 20., 0., 176., 0.]),
+                dict(solution_space=1, joints_deg=[0., 0., 20., 0., 30., 0.]),
+            ], service_error_spaces=[], no_solution_spaces=list(range(2, 8)))
+
+    limits = [[-360, 360], [-95, 95], [-135, 135], [-360, 360],
+              [-180, 180], [-345, 345]]
+    report = diagnose_path_joint_candidates(
+        arc_path(0, 0, n=3), Candidates(), None,
+        [0., 0., math.radians(20.), 0., math.radians(30.), 0.],
+        limits, 0.0, joint_constraints={
+            'min_j3_abs_deg': 10., 'min_j5_margin_deg': 15.,
+            'max_joint_step_deg': 20.,
+        })
+
+    assert report['status'] == 'SUCCEEDED'
+    assert report['selected_solution_spaces'] == [1]
+    assert report['minimum_j3_abs_deg'] == 20.
+    assert report['minimum_j5_margin_deg'] == 30.
+    assert report['max_joint_step_deg'] == 0.
+    assert report['joint_constraints_applied']['min_j5_margin_deg'] == 15.
+    assert report['used_for_execution_approval'] is False
+
+
 def test_candidate_diagnostic_keeps_service_failure_distinct_from_no_solution():
     class Unavailable:
         def inverse_kinematics_candidates(self, pose, offset, ref, cancel=None):

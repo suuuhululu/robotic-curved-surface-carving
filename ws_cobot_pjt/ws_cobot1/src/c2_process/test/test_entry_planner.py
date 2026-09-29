@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from c2_process.engraving import ExecutionContext
 from c2_process.entry_planner import (
     execute_entry_plan,
+    execute_jointx_entry_trial,
     generate_entry_candidates,
     plan_entry_path,
 )
@@ -48,6 +49,53 @@ class EntryAdapter:
         self.moves.append(list(pose))
         self.pose = list(pose)
         return StepResult("SUCCEEDED", "NONE", "이동 완료", "entry")
+
+
+class DiagnosticEntryAdapter(EntryAdapter):
+    def __init__(self):
+        super().__init__()
+        self.candidate_calls = 0
+
+    def inverse_kinematics(self, pose, _offset, _reference):
+        self.ik_calls.append(list(pose))
+        return [0.0, 0.0, 20.0, 0.0, 176.0, 0.0]
+
+    def inverse_kinematics_candidates(self, pose, offset, reference, cancel=None):
+        self.candidate_calls += 1
+        return {
+            "status": "SUCCEEDED",
+            "candidates": [
+                {"solution_space": 0,
+                 "joints_deg": [0.0, 0.0, 20.0, 0.0, 176.0, 0.0]},
+                {"solution_space": 1,
+                 "joints_deg": [0.0, 0.0, 20.0, 0.0, 30.0, 0.0]},
+            ],
+            "service_error_spaces": [],
+            "no_solution_spaces": list(range(2, 8)),
+        }
+
+    def inverse_kinematics_in_space(self, pose, offset, solution_space):
+        if solution_space == 1:
+            return [0.0, 0.0, 20.0, 0.0, 30.0, 0.0]
+        if solution_space == 0:
+            return [0.0, 0.0, 20.0, 0.0, 176.0, 0.0]
+        return None
+
+    def move_jointx(self, pose, solution_space, _frame_id, profile, _deadline,
+                    cancel, expected_joints_deg=None):
+        if cancel is not None and cancel.is_set():
+            return StepResult("STOPPED", "NONE", "취소", "move_jointx")
+        self.moves.append(list(pose))
+        self.pose = list(pose)
+        self.joints_deg = list(expected_joints_deg)
+        return StepResult(
+            "SUCCEEDED", "NONE", "상공 이동 완료", "move_jointx",
+            {"commanded_solution_space": solution_space,
+             "actual_solution_space": solution_space,
+             "actual_joints_deg": list(expected_joints_deg),
+             "expected_joints_deg": list(expected_joints_deg),
+             "max_joint_error_deg": 0.0,
+             "profile_id": profile["id"]})
 
 
 def inputs(adapter=None):
@@ -130,6 +178,70 @@ def test_all_candidates_fail_closed_without_motion():
 
     assert (result.outcome, result.error_code) == ("FAILED", "ENTRY_PATH_UNAVAILABLE")
     assert adapter.moves == []
+
+
+def test_entry_candidate_diagnostic_finds_safe_space_and_requires_overhead_trial():
+    adapter = DiagnosticEntryAdapter()
+    adapter, path, workcell, profiles, context, limits = inputs(adapter)
+    starts = []
+
+    result = plan_entry_path(
+        path, workcell, adapter, adapter.observe(), [0.0, 0.0, 0.0],
+        limits, 0.0, profiles, cancel=context.cancel,
+        diagnose_candidates=True,
+        on_candidate_diagnostic_start=starts.append)
+
+    diagnostic = result.observed_state["ik_candidate_diagnostic"]
+    assert (result.outcome, result.error_code) == (
+        "FAILED", "JOINTX_ENTRY_TRIAL_REQUIRED")
+    assert diagnostic["status"] == "SUCCEEDED"
+    assert diagnostic["selected_solution_spaces"] == [1]
+    assert diagnostic["scope"]["phase"] == "ENTRY"
+    assert diagnostic["used_for_execution_approval"] is False
+    assert diagnostic["cartesian_solution_space_verified"] is False
+    assert 0 < diagnostic["candidate_query_calls"] <= 11
+    assert adapter.candidate_calls == diagnostic["candidate_query_calls"]
+    assert starts == [diagnostic["scope"]]
+    assert adapter.moves == []
+    fallback = result.observed_state["candidate_fallback"]
+    assert fallback["status"] == "DRILL_OFF_OVERHEAD_TRIAL_REQUIRED"
+    assert fallback["selected_solution_space"] == 1
+    assert fallback["move_jointx_engraving_approved"] is False
+    assert fallback["trial_plan_sha256"]
+    trial_plan = result.observed_state["jointx_entry_trial_plan"]
+    assert trial_plan["execution_mode"] == "JOINTX_ENTRY_TRIAL_ONLY"
+    assert trial_plan["selected_solution_space"] == 1
+    assert trial_plan["fixed_space_check"]["checked_samples"] == len(
+        trial_plan["validation_waypoints"])
+
+
+def test_jointx_entry_trial_requires_drill_off_and_never_engages_engraving():
+    adapter = DiagnosticEntryAdapter()
+    adapter, path, workcell, profiles, context, limits = inputs(adapter)
+    planned = plan_entry_path(
+        path, workcell, adapter, adapter.observe(), [0.0, 0.0, 0.0],
+        limits, 0.0, profiles, cancel=context.cancel,
+        diagnose_candidates=True)
+    trial_plan = planned.observed_state["jointx_entry_trial_plan"]
+    profile = {"contract": "c2-jointx-entry-trial-profile/1",
+               "id": "jointx_entry_trial", "trial_only": True,
+               "drill_off_required": True, "vel_deg_s": 20.0,
+               "acc_deg_s2": 40.0, "joint_tol_deg": 1.0,
+               "completion_timeout_s": 90.0}
+
+    blocked = execute_jointx_entry_trial(
+        trial_plan, adapter, profile, context.cancel)
+    assert (blocked.outcome, blocked.error_code) == (
+        "FAILED", "OPERATOR_CONFIRMATION_REQUIRED")
+    assert adapter.moves == []
+
+    completed = execute_jointx_entry_trial(
+        trial_plan, adapter, profile, context.cancel,
+        drill_off_confirmed=True)
+    assert completed.ok
+    assert completed.observed_state["actual_solution_space"] == 1
+    assert completed.observed_state["engraving_executed"] is False
+    assert len(adapter.moves) == 1
 
 
 def test_checked_plan_executes_once_and_mutation_is_rejected():

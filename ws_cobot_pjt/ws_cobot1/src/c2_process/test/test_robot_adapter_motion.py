@@ -8,7 +8,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import c2_process.robot_adapter as module
-from c2_process.robot_adapter import DoosanRobotAdapter, StepResult, posx_to_pose
+from c2_process.robot_adapter import (DoosanRobotAdapter, RobotState, StepResult,
+                                      posx_to_pose)
 
 ZERO = [0.] * 6
 PROFILE = {'vel_mm_s': 10., 'pos_tol_mm': .1}
@@ -23,7 +24,8 @@ def setup(monkeypatch):
     adapter = object.__new__(DoosanRobotAdapter)
     adapter.frame_id, adapter.tool_offset_m = 'c2_base', None
     adapter._srv = {name: SimpleNamespace(Request=SimpleNamespace) for name in (
-        'MoveLine', 'MoveSplineTask', 'MoveStop', 'Ikin', 'GetSolutionSpace')}
+        'MoveLine', 'MoveJointx', 'MoveSplineTask', 'MoveStop', 'Ikin',
+        'GetSolutionSpace')}
     # std_msgs 없이도 spline 직렬화와 호출 선택을 검증한다.
     monkeypatch.setitem(sys.modules, 'std_msgs.msg', SimpleNamespace(Float64MultiArray=SimpleNamespace))
     calls = []
@@ -109,6 +111,49 @@ def test_tcp_offset_applied_once_in_line_request(setup):
     r = ad.move([0., 0., .2, 0., 0., 0., 1.], 'c2_base', PROFILE, 2., None)
     assert r.ok and calls[0][1].pos[2] == pytest.approx(100.)
     assert r.observed_state['tcp_pose'][2] == pytest.approx(.2)
+
+
+def test_move_jointx_uses_joint_profile_and_verifies_actual_space(setup):
+    ad, clock, calls = setup
+    target = [10., 0., 0., 0., 0., 0.]
+    samples(ad, [(ZERO, 1, 0), (target, 2, 2), (target, 1, 0)])
+    expected = [1., 2., 30., 4., 25., 6.]
+    ad.observe = lambda: RobotState(
+        joints_rad=[module.math.radians(v) for v in expected],
+        tcp_pose=posx_to_pose(target), frame_id='c2_base', robot_state=1,
+        measured_at=clock.now, quality='VALID')
+    ad._read = lambda endpoint, typename, **fields: SimpleNamespace(sol_space=3)
+    profile = dict(vel_deg_s=20., acc_deg_s2=40., joint_tol_deg=1.,
+                   pos_tol_mm=.1, angle_tol_deg=.15)
+
+    result = ad.move_jointx(posx_to_pose(target), 3, 'c2_base', profile,
+                            5., None, expected_joints_deg=expected)
+
+    assert result.ok
+    assert calls[0][0] == 'motion/move_jointx'
+    request = calls[0][1]
+    assert (request.vel, request.acc, request.sol, request.sync_type) == (20., 40., 3, 1)
+    assert result.observed_state['actual_solution_space'] == 3
+    assert result.observed_state['max_joint_error_deg'] == pytest.approx(0.)
+
+
+def test_move_jointx_blocks_space_mismatch_after_motion(setup):
+    ad, clock, calls = setup
+    target = [10., 0., 0., 0., 0., 0.]
+    samples(ad, [(ZERO, 1, 0), (target, 2, 2), (target, 1, 0)])
+    ad.observe = lambda: RobotState(
+        joints_rad=[0.] * 6, tcp_pose=posx_to_pose(target), frame_id='c2_base',
+        robot_state=1, measured_at=clock.now, quality='VALID')
+    ad._read = lambda endpoint, typename, **fields: SimpleNamespace(sol_space=2)
+    profile = dict(vel_deg_s=20., acc_deg_s2=40., joint_tol_deg=1.,
+                   pos_tol_mm=.1, angle_tol_deg=.15)
+
+    result = ad.move_jointx(posx_to_pose(target), 3, 'c2_base', profile,
+                            5., None, expected_joints_deg=[0.] * 6)
+
+    assert (result.outcome, result.error_code) == (
+        'FAILED', 'SOLUTION_SPACE_MISMATCH')
+    assert result.observed_state['actual_solution_space'] == 2
 
 
 @pytest.mark.parametrize('confirmed', [True, False])

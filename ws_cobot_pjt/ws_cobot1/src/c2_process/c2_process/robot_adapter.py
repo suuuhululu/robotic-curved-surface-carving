@@ -153,6 +153,11 @@ class RobotAdapter:
     def move_spline(self, poses, frame_id, profile, deadline_s, cancel) -> StepResult:
         raise NotImplementedError
 
+    def move_jointx(self, pose, solution_space, frame_id, profile, deadline_s,
+                    cancel, expected_joints_deg=None) -> StepResult:
+        """비접촉 시험용 MoveJointx. 완료 뒤 실제 관절과 solution space를 재확인한다."""
+        raise NotImplementedError
+
     def probe_touch(self, direction, max_m, profile, deadline_s, cancel) -> StepResult:
         raise NotImplementedError
 
@@ -173,6 +178,10 @@ class RobotAdapter:
 
     def inverse_kinematics_candidates(self, pose, tool_offset_m, ref_joints_deg, cancel=None):
         """최대 8개 solution space의 IK 조회 진단. 실행용 solution space를 변경하지 않는다."""
+        raise NotImplementedError
+
+    def inverse_kinematics_in_space(self, pose, tool_offset_m, solution_space):
+        """지정한 solution space 하나의 IK를 조회한다. 실행 상태는 변경하지 않는다."""
         raise NotImplementedError
 
     def reset_ik_metrics(self):
@@ -203,6 +212,12 @@ class RobotAdapter:
 
 def _cancelled(cancel) -> bool:
     return cancel is not None and cancel.is_set()
+
+
+def _finite_joint_vector(values) -> bool:
+    return (isinstance(values, (list, tuple)) and len(values) == 6
+            and all(type(value) in (int, float) and math.isfinite(value)
+                    for value in values))
 
 
 def _axis_index(tool_axis):
@@ -254,7 +269,7 @@ class DoosanRobotAdapter(RobotAdapter):
                  initialization_timeout_s=5.0):
         from dsr_msgs2.srv import (MoveStop, GetCurrentTcp, GetCurrentTool, SetCurrentTcp, SetCurrentTool, SetRobotMode,
                                    GetRobotState, GetCurrentPosj, GetCurrentPosx, GetToolForce,
-                                   MoveLine, MoveSplineTask, CheckMotion, Ikin, GetSolutionSpace,
+                                   MoveLine, MoveJointx, MoveSplineTask, CheckMotion, Ikin, GetSolutionSpace,
                                    SetSingularityHandling,
                                    TaskComplianceCtrl, SetDesiredForce, ReleaseForce, ReleaseComplianceCtrl)
         if (not isinstance(controller_prefix, str)
@@ -269,7 +284,8 @@ class DoosanRobotAdapter(RobotAdapter):
                          SetCurrentTcp=SetCurrentTcp, SetCurrentTool=SetCurrentTool, SetRobotMode=SetRobotMode,
                          GetRobotState=GetRobotState, GetCurrentPosj=GetCurrentPosj,
                          GetCurrentPosx=GetCurrentPosx, GetToolForce=GetToolForce,
-                         MoveLine=MoveLine, MoveSplineTask=MoveSplineTask, CheckMotion=CheckMotion,
+                         MoveLine=MoveLine, MoveJointx=MoveJointx,
+                         MoveSplineTask=MoveSplineTask, CheckMotion=CheckMotion,
                          Ikin=Ikin, GetSolutionSpace=GetSolutionSpace,
                          SetSingularityHandling=SetSingularityHandling,
                          TaskComplianceCtrl=TaskComplianceCtrl, SetDesiredForce=SetDesiredForce,
@@ -478,6 +494,28 @@ class DoosanRobotAdapter(RobotAdapter):
         return dict(status=status, queried_spaces=8, candidates=candidates, spaces=spaces,
                     service_error_spaces=service_errors,
                     no_solution_spaces=no_solutions)
+
+    def inverse_kinematics_in_space(self, pose, tool_offset_m, solution_space):
+        if type(solution_space) is not int or not 0 <= solution_space < 8:
+            raise ValueError("solution_space는 0~7 정수여야 함")
+        px = pose_to_posx(pose, tool_offset_m)
+        kind = self._srv["Ikin"]
+        response = self._call(
+            "motion/ikin", kind,
+            kind.Request(pos=[float(v) for v in px], sol_space=solution_space, ref=0),
+            timeout=5.0)
+        if getattr(response, "success", None) is not True:
+            return None
+        q = getattr(response, "conv_posj", None)
+        if isinstance(q, tuple) and q and hasattr(q[0], "__len__"):
+            q = q[0]
+        try:
+            values = [float(value) for value in list(q)[:6]]
+        except (TypeError, ValueError):
+            raise RuntimeError("IK 응답 형식 오류")
+        if not _finite_joint_vector(values):
+            raise RuntimeError("IK 응답 관절값 오류")
+        return values
 
     def reset_ik_metrics(self):
         if not hasattr(self, "_ik_metrics_lock"):
@@ -916,6 +954,89 @@ class DoosanRobotAdapter(RobotAdapter):
     def move_spline(self, poses, frame_id, profile, deadline_s, cancel) -> StepResult:
         return self._execute_motion(poses, frame_id, profile, deadline_s, cancel, True)
 
+    def move_jointx(self, pose, solution_space, frame_id, profile, deadline_s,
+                    cancel, expected_joints_deg=None) -> StepResult:
+        """선택 space의 비접촉 target으로 MoveJointx 후 실제 space·관절을 재검사한다.
+
+        이 API의 존재만으로 조각 실행이 승인되지는 않는다. 호출자는 별도 상공 시험
+        프로파일과 실행 게이트를 적용해야 한다.
+        """
+        step = "move_jointx"
+        if _cancelled(cancel):
+            return StepResult("STOPPED", "NONE", "취소됨 (MoveJointx 전)", step)
+        try:
+            if not self._frame_ok(frame_id):
+                raise ValueError("frame_id 불일치")
+            if type(solution_space) is not int or not 0 <= solution_space < 8:
+                raise ValueError("solution_space는 0~7 정수여야 함")
+            vel = float(profile["vel_deg_s"])
+            acc = float(profile["acc_deg_s2"])
+            joint_tol = float(profile["joint_tol_deg"])
+            if any(not math.isfinite(v) or v <= 0
+                   for v in (vel, acc, joint_tol, deadline_s)):
+                raise ValueError("관절 속도·가속도·허용차·제한 시간은 양의 유한 값이어야 함")
+            if expected_joints_deg is not None and not _finite_joint_vector(expected_joints_deg):
+                raise ValueError("예상 관절값은 유한한 6개 값이어야 함")
+            target = pose_to_posx(pose, self.tool_offset_m)
+        except (KeyError, TypeError, ValueError) as exc:
+            return StepResult("FAILED", "INVALID_INPUT", str(exc), step)
+        end = time.monotonic() + deadline_s
+        try:
+            start, state, motion = self._motion_sample(min(2.0, deadline_s))
+            if state != self.STATE_STANDBY or motion != 0:
+                return StepResult("FAILED", "NOT_READY", "MoveJointx 전 정지 상태 아님", step)
+            if _cancelled(cancel):
+                return StepResult("STOPPED", "NONE", "취소됨 (MoveJointx 전송 전)", step)
+            kind = self._srv["MoveJointx"]
+            response = self._call(
+                "motion/move_jointx", kind,
+                kind.Request(pos=[float(v) for v in target], vel=vel, acc=acc,
+                             time=0.0, radius=0.0, ref=0, mode=0,
+                             blend_type=0, sol=solution_space, sync_type=1),
+                timeout=min(2.0, max(0.0, end - time.monotonic())))
+            if response is None or response.success is not True:
+                return self._motion_failure("FAILED", "NOT_READY",
+                                            "MoveJointx 명령 거부/응답 없음", step)
+            result = self._wait_motion(
+                target, max(0.0, end - time.monotonic()), cancel, step,
+                float(profile.get("pos_tol_mm", 2.0)), start=start,
+                angle_tol_deg=float(profile.get("angle_tol_deg", 0.15)))
+            if not result.ok:
+                return result
+            observed = self.observe()
+            if observed.quality != "VALID" or not _finite_joint_vector(observed.joints_rad):
+                return StepResult("UNKNOWN", "VALIDATION_UNAVAILABLE",
+                                  "MoveJointx 완료 후 실제 관절 확인 불가", step,
+                                  dict(commanded_solution_space=solution_space))
+            actual_joints = [math.degrees(v) for v in observed.joints_rad]
+            actual_space = int(self._read(
+                "aux_control/get_solution_space", "GetSolutionSpace",
+                pos=[float(v) for v in actual_joints]).sol_space)
+            joint_error = (None if expected_joints_deg is None else
+                           max(abs(a - b) for a, b in zip(actual_joints,
+                                                          expected_joints_deg)))
+            verification = dict(
+                commanded_solution_space=solution_space,
+                actual_solution_space=actual_space,
+                actual_joints_deg=actual_joints,
+                expected_joints_deg=(None if expected_joints_deg is None
+                                     else list(expected_joints_deg)),
+                max_joint_error_deg=joint_error)
+            if actual_space != solution_space:
+                return StepResult("FAILED", "SOLUTION_SPACE_MISMATCH",
+                                  "MoveJointx 완료 후 실제 solution space 불일치",
+                                  step, verification)
+            if joint_error is not None and joint_error > joint_tol:
+                return StepResult("FAILED", "JOINT_POSITION_MISMATCH",
+                                  f"MoveJointx 관절 오차 {joint_error:.2f}° > {joint_tol:.2f}°",
+                                  step, verification)
+            return StepResult("SUCCEEDED", "NONE",
+                              "MoveJointx 실제 관절·solution space 확인", step,
+                              verification)
+        except Exception as exc:
+            return self._motion_failure("UNKNOWN", "COMMUNICATION_LOST",
+                                        str(exc), step)
+
     # ---- 힘 감시 접촉 찾기 ----
     def probe_touch(self, direction, max_m, profile, deadline_s, cancel) -> StepResult:
         """base 단위벡터 direction 으로 저속 직선 이동(비동기)하며 이동 방향 반력 급증/완만 상승을 접촉으로 판정.
@@ -1157,6 +1278,8 @@ class MockRobotAdapter(RobotAdapter):
         self.frame_id, self.surface_fn, self.fail_at, self.delay_s = frame_id, surface_fn, fail_at, delay_s
         self.move_time_s = move_time_s                  # > 0 이면 이동이 이 시간 동안 진행되며 도중 취소를 받는다
         self.pose = [0.384, 0.0076, 0.1054, 0.0, 1.0, 0.0, 0.0]    # 홈 근처 임의 시작
+        self.joints_deg = [0.0] * 6
+        self.solution_space = 0
         self.tool_offset_m = None
         self.calls: List[Dict] = []
         self.stopped = False
@@ -1246,12 +1369,20 @@ class MockRobotAdapter(RobotAdapter):
                             for sp in range(8)],
                     service_error_spaces=[], no_solution_spaces=list(range(1, 8)))
 
+    def inverse_kinematics_in_space(self, pose, tool_offset_m, solution_space):
+        if type(solution_space) is not int or not 0 <= solution_space < 8:
+            raise ValueError("solution_space는 0~7 정수여야 함")
+        if solution_space != self.solution_space:
+            return None
+        return self.inverse_kinematics(pose, tool_offset_m, self.joints_deg)
+
     def set_tool_offset(self, offset_tool_m):
         self.tool_offset_m = list(offset_tool_m) if offset_tool_m else None
         self.calls.append(dict(fn="set_tool_offset", offset=self.tool_offset_m))
 
     def observe(self):
-        return RobotState(joints_rad=[0.0] * 6, tcp_pose=list(self.pose), frame_id=self.frame_id, robot_state=1,
+        return RobotState(joints_rad=[math.radians(v) for v in self.joints_deg],
+                          tcp_pose=list(self.pose), frame_id=self.frame_id, robot_state=1,
                           force_n=[0.0, 0.0, 0.0], measured_at=time.monotonic(), quality="VALID")
 
     def select_tool_profile(self, tcp_id, load_id, profile_version=None, deadline_s=10.0):
@@ -1296,6 +1427,42 @@ class MockRobotAdapter(RobotAdapter):
         if r:
             return r
         return self._simulate_motion(list(poses[-1]), "move_spline", cancel)
+
+    def move_jointx(self, pose, solution_space, frame_id, profile, deadline_s,
+                    cancel, expected_joints_deg=None):
+        if (_cancelled(cancel) or frame_id != self.frame_id
+                or type(solution_space) is not int or not 0 <= solution_space < 8):
+            return StepResult("STOPPED" if _cancelled(cancel) else "FAILED",
+                              "NONE" if _cancelled(cancel) else "INVALID_INPUT",
+                              "MoveJointx 모의 입력 거절", "move_jointx")
+        try:
+            for key in ("vel_deg_s", "acc_deg_s2", "joint_tol_deg"):
+                if not math.isfinite(float(profile[key])) or float(profile[key]) <= 0:
+                    raise ValueError
+            if expected_joints_deg is not None and not _finite_joint_vector(expected_joints_deg):
+                raise ValueError
+        except (KeyError, TypeError, ValueError):
+            return StepResult("FAILED", "INVALID_INPUT", "MoveJointx 관절 프로파일 오류",
+                              "move_jointx")
+        r = self._rec("move_jointx", solution_space=solution_space,
+                      vel_deg_s=float(profile["vel_deg_s"]),
+                      acc_deg_s2=float(profile["acc_deg_s2"]))
+        if r:
+            return r
+        moved = self._simulate_motion(list(pose), "move_jointx", cancel)
+        if not moved.ok:
+            return moved
+        if expected_joints_deg is not None:
+            self.joints_deg = list(expected_joints_deg)
+        self.solution_space = solution_space
+        return StepResult("SUCCEEDED", "NONE",
+                          "MoveJointx 실제 관절·solution space 확인", "move_jointx",
+                          dict(commanded_solution_space=solution_space,
+                               actual_solution_space=self.solution_space,
+                               actual_joints_deg=list(self.joints_deg),
+                               expected_joints_deg=(None if expected_joints_deg is None
+                                                    else list(expected_joints_deg)),
+                               max_joint_error_deg=0.0 if expected_joints_deg is not None else None))
 
     def probe_touch(self, direction, max_m, profile, deadline_s, cancel):
         if _cancelled(cancel):

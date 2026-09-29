@@ -1,0 +1,19 @@
+{
+  "contract": "c2-jointx-entry-trial-profile/1",
+  "id": "jointx_entry_trial",
+  "source_mode": "REAL",
+  "trial_only": true,
+  "drill_off_required": true,
+  "vel_deg_s": 20.0,
+  "acc_deg_s2": 40.0,
+  "joint_tol_deg": 1.0,
+  "pos_tol_mm": 2.0,
+  "angle_tol_deg": 0.15,
+  "completion_timeout_s": 90.0,
+  "engraving_approved": false,
+  "provenance": {
+    "scope": "CODE_MOCK_AND_SUPERVISED_DRILL_OFF_OVERHEAD_TRIAL_ONLY",
+    "approval_note": "20 deg/s and 40 deg/s^2 are initial MoveJointx trial values, not production engraving approval.",
+    "required_follow_up": "Verify overhead trajectory, joint change, actual solution space, and stop behavior before engraving use."
+  }
+}

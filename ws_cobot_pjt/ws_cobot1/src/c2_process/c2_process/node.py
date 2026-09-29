@@ -1634,11 +1634,18 @@ class ProcessCoordinator:
                     if not workspace.ok:
                         return workspace
                     entry_started = time.monotonic()
+                    entry_kwargs = dict(cancel=context.cancel,
+                                        joint_check_fn=self.joint_check_fn)
+                    if self.entry_plan_fn is plan_entry_path:
+                        entry_kwargs.update(
+                            diagnose_candidates=self.runtime_mode == "REAL",
+                            on_candidate_diagnostic_start=lambda scope:
+                                self.on_candidate_diagnostic_start(goal, config, scope)
+                                if self.on_candidate_diagnostic_start is not None else None)
                     entry = self.entry_plan_fn(
                         dict(loaded.path), dict(loaded.workcell), loaded.adapter, state,
                         list(offset), context.joint_limits_deg, context.j6_margin_deg,
-                        context.motion_profiles, cancel=context.cancel,
-                        joint_check_fn=self.joint_check_fn)
+                        context.motion_profiles, **entry_kwargs)
                     stage_metrics["entry"] = {
                         "stage_elapsed_s": max(0.0, time.monotonic() - entry_started),
                     }
@@ -2286,6 +2293,10 @@ def create_ros_node(load_inputs: Callable[[Mapping], ExecutionInputs] = _missing
                     severity="WARNING")
             diagnostic = result.observed_state.get("ik_candidate_diagnostic")
             if isinstance(diagnostic, Mapping):
+                scope = diagnostic.get("scope") if isinstance(
+                    diagnostic.get("scope"), Mapping) else {}
+                phase = scope.get("phase")
+                diagnostic_name = f"{phase} IK 후보 진단" if phase else "IK 후보 진단"
                 status = diagnostic.get("status", "UNKNOWN")
                 spaces = diagnostic.get("selected_solution_spaces") or []
                 space_text = "→".join(str(value) for value in spaces) if spaces else "선택 없음"
@@ -2301,7 +2312,13 @@ def create_ros_node(load_inputs: Callable[[Mapping], ExecutionInputs] = _missing
                     margin = f"최소 잔여 {diagnostic.get('minimum_j6_remaining_deg', '—')}°"
                 else:
                     j6, margin = "J6 계산 미완료", "최소 잔여 미확인"
-                message = (f"IK 후보 진단 {status}: space {space_text} · {j6} · {margin} · "
+                singularity = ""
+                if diagnostic.get("minimum_j5_margin_deg") is not None:
+                    singularity = (
+                        f" · J3 최소 |각| {diagnostic.get('minimum_j3_abs_deg', '—')}°"
+                        f" · J5 최소 여유 {diagnostic['minimum_j5_margin_deg']}°")
+                message = (f"{diagnostic_name} {status}: space {space_text} · {j6} · {margin}"
+                           f"{singularity} · "
                            f"{location} · 실행 승인 미사용 · Cartesian 동일성 미검증")
                 self.emit_event("DIAGNOSTIC", code="IK_CANDIDATE_DIAGNOSTIC",
                                 message=message,
