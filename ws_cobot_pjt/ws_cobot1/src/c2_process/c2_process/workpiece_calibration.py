@@ -627,22 +627,18 @@ def measure_workpiece(adapter, workcell, profiles, context, on_progress=None):
                 event("SIDE_TOUCH","RUNNING",
                       f"같은 점 재측정 전 정지 확인·시작점 복구: {exc.code}",index,
                       dict(attempt=point_attempts[index],reason=exc.code))
-                exhausted=point_attempts[index]>=w["side_point_max_attempts"]
-                tolerance=w["pose_tolerance_m"]
-                recovery=[]
-                if travel>tolerance:
-                    # 접촉 탐색 중 안쪽에서 멈춘 경우에만 검사한 시작점으로 후퇴한다.
-                    recovery.append(_move(step["start_pose"],"retract",f"point_{index}_retract"))
-                elif travel < -tolerance and not exhausted:
-                    # 시작점 바깥은 안전한 정지 위치다. 재시도할 때만 시작점으로 접근한다.
-                    recovery.append(_move(step["start_pose"],"approach",f"point_{index}_approach"))
-                # 시작점 복구 이동도 이 한 구간만 검사한다. 이미 허용오차 안이면 MOVE 없이
-                # probe 가 새 baseline 부터 다시 확보한다.
-                for move in recovery:
-                    recheck_target(move)
-                    execute_with_recovery(move)
-                if exhausted:
+                # 이 브랜치의 기존 복구 순서(retract → approach → 같은 PROBE)는 유지한다.
+                # 시작점 바깥에서 멈춘 경우 retract는 현재 위치의 정지 확인 기록만 남기며
+                # 안쪽으로 다시 진입하지 않는다. 각 MOVE만 #99 방식으로 단일 구간 재검사한다.
+                retract_target=current if travel<0 else step["start_pose"]
+                retract=_move(retract_target,"retract",f"point_{index}_retract")
+                recheck_target(retract)
+                execute_with_recovery(retract)
+                if point_attempts[index]>=w["side_point_max_attempts"]:
                     raise MeasurementError("RECOVERY_REQUIRED",f"{index}번 점 {point_attempts[index]}회 측정 실패: {exc}")
+                approach=_move(step["start_pose"],"approach",f"point_{index}_approach")
+                recheck_target(approach)
+                execute_with_recovery(approach)
 
     def confirmed_stop():
         stopped=adapter.stop_measurement(deepcopy(p["stop"]))
