@@ -10,7 +10,7 @@ uint64 event_seq
 builtin_interfaces/Time occurred_at
 string run_id
 string request_id
-# COMMAND, PHASE_CHANGED, ALARM_RAISED, ALARM_CLEARED, RUN_FINISHED
+# COMMAND, PHASE_CHANGED, DIAGNOSTIC, ALARM_RAISED, ALARM_CLEARED, RUN_FINISHED
 string event_type
 string phase
 # INFO, WARNING, ERROR. code는 기계 판정용, message는 한국어 설명.

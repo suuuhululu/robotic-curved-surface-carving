@@ -5,6 +5,9 @@
 - 측정 설정: `workpiece_real_trial_0921.json`. PR #82가 `feat/engraving-force-hold-return-home`에 병합된 `c64fc6d`의 전체 측정 정책을 main `8409fc6`과 로컬 통합했다. start_gap 5 mm, side_search 10 mm, baseline lead-in 4.05 mm, 이동 복구 최대 3회, 조건부 비접촉 상한 15 N을 담당자 코드와 함께 적용한다.
 - 2026-09-23 15:02 **8/8** 원본으로 다음 측정 seed 중심·반지름과 윗면 접근·이탈 XY를 갱신했다. 기존 HOME·Z 탐색·trial_scene 경계와 hard_force_n은 유지한다. 새 seed로 바뀐 계획의 실기 검증은 별도다.
 - 실행 프로파일: `real_execution_profile_20260923.json`. 반지름 33.89996884310031 mm, 축 바닥 `[0.42325530708859205, 0.00032844108604387424, 0.06576846313740473]` m. 운영 시 새 MEASURE→BIND에서 실측 기하를 다시 채운다. 조각 속도·깊이·ENTRY 정책·타임아웃은 유지한다.
+- 2026-09-29 전체 둘레 실행 후보 정책으로 `surface.reachable_angle_deg=[-180,180]`, J6 한계 `[-345,345]`, `j6_margin_deg=0.0`을 등록했다. REAL BIND는 이 값을 강제 변경하지 않고 실행 프로파일에서 그대로 보존한다. 경로는 이음매에서 분할하며, 이 설정은 기계 한계·충돌 안전을 입증하지 않는다. 같은 최종 실행계획의 PRECHECK IK·관절 검사에 실패한 위치는 실행하지 않으며 실제 전체 둘레 운용 승인은 별도 실기 검증 대상이다.
+- 같은 날 다중 IK 후보열 계산을 진단 전용으로 연결했다. 빠른 단일해 PRECHECK가 성공하면 추가 조회하지 않고, 관절 한계·IK 실패일 때만 실패점 앞뒤 최대 11개 waypoint에서 각 8개 solution space를 조회한다. 후보 결과는 실행 승인에 사용하지 않으며, MoveL/MoveSX가 선택 space를 유지한다는 제어기 검증 전에는 자동 후보 전환을 허용하지 않는다.
+- 현재 설치된 Jazzy `dsr_msgs2/srv/MoveLine`·`MoveSplineTask` 요청에는 `solution_space` 지정 필드가 없다. 따라서 IK 후보열과 실제 Cartesian 관절열의 동일성을 인터페이스만으로 강제할 수 없으며 진단 결과의 `cartesian_solution_space_verified`는 계속 `false`다. 공급자 보장 또는 실행 관절열 대조 시험 전에는 자동 후보 선택을 승인 경로로 승격하지 않는다.
 - [원본 및 초기 갱신 기록](../../../../docs/validation/2026-09-23-eight-point-config.md), [통합 실행 준비 기록](../../../../docs/validation/2026-09-23-real-integration-ready.md)을 참조한다. 로컬 통합본이며 main 병합·실기 통합 완료로 표시하지 않는다.
 
 - workcell: `frame_id=c2_base`, 고정 대상·이음매·작업 영역, J6 경로 검증 조건을 명시한다. 현재 공정에는 청소면을 정의하지 않는다.

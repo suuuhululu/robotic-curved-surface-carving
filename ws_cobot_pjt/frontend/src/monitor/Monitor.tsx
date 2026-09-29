@@ -132,6 +132,11 @@ export default function Monitor() {
   const previousProfile = useRef<string | null>(null);
   const previousPreparation = useRef<string | null>(null);
   const run = snapshot?.active_run;
+  const ikCandidateDiagnostic = snapshot?.events.find(
+    (event) =>
+      event.run_id === run?.run_id &&
+      event.code === "IK_CANDIDATE_DIAGNOSTIC",
+  );
   const preparation = snapshot?.preparation.current;
   const preparationRunning = activePreparation(preparation?.state);
   const fresh = connected && snapshot?.connection === "CONNECTED";
@@ -1387,6 +1392,11 @@ export default function Monitor() {
                           {errorGuidance(run.error_code).action}
                         </p>
                       )}
+                    {ikCandidateDiagnostic && (
+                      <p className="ik-candidate-diagnostic" role="status">
+                        {ikCandidateDiagnostic.message}
+                      </p>
+                    )}
                     {snapshot?.execution_pending && run && !active(run) && (
                       <p role="status">
                         최종 응답을 확인 중입니다. 확인이 끝나면 다음 작업을

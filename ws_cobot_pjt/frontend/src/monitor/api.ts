@@ -113,6 +113,7 @@ export type PathResult = {
 };
 export type Event = {
   event_id: string;
+  run_id?: string;
   occurred_at: string;
   event_type: string;
   severity: string;

@@ -154,8 +154,7 @@ def test_hmi_real_profile_reaches_each_execution_segment_unchanged():
     assert context.tool_profile == expected['tool_profile']
     assert context.stop_profile == expected['stop_profile']
     assert context.joint_limits_deg == snapshot['joint_check_arguments']['limits_deg']
-    assert context.j6_margin_deg == snapshot['joint_check_arguments']['j6_margin_deg'] == 0.
-    assert context.joint_limits_deg[5] == [-170., 170.]
+    assert context.j6_margin_deg == snapshot['joint_check_arguments']['j6_margin_deg']
     assert settings['tool_offset_m'] == snapshot['tip_calibration']['offset_tool_m']
     assert settings['tool_offset_m'] == config['workcell']['tool_offset_m']
 

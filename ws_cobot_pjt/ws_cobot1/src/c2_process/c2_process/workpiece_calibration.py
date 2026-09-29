@@ -597,15 +597,25 @@ def measure_workpiece(adapter, workcell, profiles, context, on_progress=None):
                         lateral>w["pose_tolerance_m"] or
                         rotation_distance(current,step["start_pose"])>w["angle_tolerance_rad"]):
                     raise MeasurementError("RECOVERY_REQUIRED","같은 점의 검사된 방사선 후퇴 범위 밖")
-                event("SIDE_TOUCH","RUNNING","같은 점 재측정 전 정지 확인·후퇴",index,
+                event("SIDE_TOUCH","RUNNING",
+                      f"같은 점 재측정 전 정지 확인·시작점 복구: {exc.code}",index,
                       dict(attempt=point_attempts[index],reason=exc.code))
-                # 시작점보다 바깥의 정지 위치에서는 안쪽으로 후퇴하지 않는다.
-                target=current if travel<0 else step["start_pose"]
-                run([_move(target,"retract",f"point_{index}_retract")])
-                if point_attempts[index]>=w["side_point_max_attempts"]:
+                exhausted=point_attempts[index]>=w["side_point_max_attempts"]
+                tolerance=w["pose_tolerance_m"]
+                recovery=[]
+                if travel>tolerance:
+                    # 접촉 탐색 중 안쪽에서 멈춘 경우에만 검사한 시작점으로 후퇴한다.
+                    recovery.append(_move(step["start_pose"],"retract",f"point_{index}_retract"))
+                elif travel < -tolerance and not exhausted:
+                    # 시작점 바깥은 안전한 정지 위치다. 재시도할 때만 시작점으로 접근한다.
+                    recovery.append(_move(step["start_pose"],"approach",f"point_{index}_approach"))
+                if exhausted:
+                    if recovery:
+                        run(recovery)
                     raise MeasurementError("RECOVERY_REQUIRED",f"{index}번 점 {point_attempts[index]}회 측정 실패: {exc}")
-                # baseline은 probe 호출 안에서 새로 확보한다. 남은 구간 캐시도 재검사.
-                run([_move(step["start_pose"],"approach",f"point_{index}_approach"),*steps[position:]])
+                # 복구와 재시도를 한 계획으로 검사해 같은 시작점을 연속 명령하지 않는다.
+                # 이미 시작점 허용오차 안이면 MOVE 없이 probe가 새 baseline부터 다시 확보한다.
+                run([*recovery,*steps[position:]])
                 return
 
     def confirmed_stop():

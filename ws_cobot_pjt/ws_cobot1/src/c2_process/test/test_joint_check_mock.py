@@ -5,7 +5,8 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from c2_process.robot_adapter import MockRobotAdapter, matrix_to_quat  # noqa: E402
-from c2_process.joint_check import check_path_joints  # noqa: E402
+from c2_process.joint_check import (candidate_diagnostic_window, check_path_joints,
+                                    diagnose_path_joint_candidates)  # noqa: E402
 
 
 def upright(yaw_deg):
@@ -36,6 +37,108 @@ def test_fail_when_j6_exceeds_margin():
     r = check_path_joints(arc_path(90, 160), ad, None, ref)          # +70° 더 돌면 370 > 350
     assert r.outcome == "FAILED" and r.error_code == "VALIDATION_FAILED", r
     assert r.observed_state["worst"]["joint"] == 6
+
+
+def test_j6_approved_boundary_is_inclusive():
+    class BoundaryIK:
+        def inverse_kinematics(self, pose, offset, ref):
+            return [0.0, 0.0, 0.0, 0.0, 0.0, 345.0]
+
+    limits = [list(pair) for pair in [(-360, 360), (-95, 95), (-135, 135),
+                                      (-360, 360), (-135, 135), (-345, 345)]]
+    result = check_path_joints(arc_path(0, 0, n=2), BoundaryIK(), None,
+                               [0.0] * 5 + [math.radians(340.0)],
+                               limits_deg=limits, j6_margin_deg=0.0)
+
+    assert result.ok
+    assert result.observed_state["j6_max_deg"] == 345.0
+
+
+def test_j6_overrun_reports_limits_point_and_remaining_margin():
+    path = arc_path(0, 0, n=2)
+    points = path["segments"][0]["waypoints"]
+
+    class OverrunIK:
+        def inverse_kinematics(self, pose, offset, ref):
+            return [0.0, 0.0, 0.0, 0.0, 0.0, 344.0 if pose is points[0] else 346.0]
+
+    limits = [list(pair) for pair in [(-360, 360), (-95, 95), (-135, 135),
+                                      (-360, 360), (-135, 135), (-345, 345)]]
+    result = check_path_joints(path, OverrunIK(), None,
+                               [0.0] * 5 + [math.radians(340.0)],
+                               limits_deg=limits, j6_margin_deg=0.0)
+
+    assert (result.outcome, result.error_code) == ("FAILED", "VALIDATION_FAILED")
+    assert result.observed_state["j6_min_deg"] == 340.0
+    assert result.observed_state["j6_max_deg"] == 346.0
+    assert result.observed_state["worst"] == {
+        "segment_id": "s1", "index": 1, "checked_waypoints": 1,
+        "inspection_scope": "SURFACE_PATH", "joint": 6, "value_deg": 346.0,
+        "limits_deg": [-345, 345], "margin_deg": 0.0,
+        "remaining_margin_deg": -1.0,
+    }
+
+
+def test_candidate_diagnostic_selects_limit_compliant_alternative_without_approval():
+    class Candidates:
+        def inverse_kinematics_candidates(self, pose, offset, ref, cancel=None):
+            values = []
+            for space, j6 in ((0, 174.0), (1, 160.0)):
+                q = [0.0] * 5 + [j6]
+                delta = [abs(q[i] - ref[i]) for i in range(6)]
+                values.append(dict(solution_space=space, joints_deg=q,
+                                   joint_delta_deg=delta,
+                                   max_joint_delta_deg=max(delta),
+                                   total_joint_delta_deg=sum(delta)))
+            return dict(status="SUCCEEDED", candidates=values,
+                        service_error_spaces=[], no_solution_spaces=list(range(2, 8)))
+
+    limits = [[-360, 360], [-95, 95], [-135, 135], [-360, 360],
+              [-135, 135], [-170, 170]]
+    report = diagnose_path_joint_candidates(
+        arc_path(0, 0, n=3), Candidates(), None,
+        [0.0] * 5 + [math.radians(160.0)], limits, 0.0)
+
+    assert report['status'] == 'SUCCEEDED'
+    assert report['selected_solution_spaces'] == [1]
+    assert report['solution_space_switches'] == 0
+    assert report['j6_min_deg'] == report['j6_max_deg'] == 160.0
+    assert report['minimum_j6_remaining_deg'] == 10.0
+    assert report['used_for_execution_approval'] is False
+    assert report['cartesian_solution_space_verified'] is False
+    assert len(report['sequence_sha256']) == 64
+
+
+def test_candidate_diagnostic_keeps_service_failure_distinct_from_no_solution():
+    class Unavailable:
+        def inverse_kinematics_candidates(self, pose, offset, ref, cancel=None):
+            return dict(status="SERVICE_ERROR", candidates=[],
+                        service_error_spaces=list(range(8)), no_solution_spaces=[])
+
+    limits = [[-360, 360], [-95, 95], [-135, 135], [-360, 360],
+              [-135, 135], [-345, 345]]
+    report = diagnose_path_joint_candidates(
+        arc_path(0, 0, n=2), Unavailable(), None, REF, limits, 0.0)
+
+    assert report['status'] == 'INCOMPLETE'
+    assert report['reason'] == 'SERVICE_ERROR_WITHOUT_SAFE_CANDIDATE'
+    assert report['failure_waypoint']['query_status'] == 'SERVICE_ERROR'
+    assert report['failure_waypoint']['service_error_spaces'] == list(range(8))
+
+
+def test_candidate_diagnostic_window_limits_query_to_failure_neighborhood():
+    path = arc_path(0, 0, n=20)
+    scoped, global_start, metadata = candidate_diagnostic_window(
+        path, {'worst': {'segment_id': 's1', 'index': 12}}, radius=3)
+
+    assert global_start == 9
+    assert len(scoped['segments'][0]['waypoints']) == 7
+    assert scoped['inspection_scope'] == 'IK_CANDIDATE_FAILURE_WINDOW'
+    assert metadata == {
+        'segment_id': 's1', 'failure_index': 12,
+        'window_start_index': 9, 'window_end_index': 15,
+        'waypoint_count': 7, 'global_start_index': 9,
+    }
 
 
 def test_unwrap_keeps_continuity_across_180():

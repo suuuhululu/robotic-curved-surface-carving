@@ -25,7 +25,8 @@ from .engraving import ExecutionContext, execute_path, validate_path, build_exec
 from .entry_planner import execute_entry_plan, plan_entry_path
 from .return_home_planner import execute_return_home_plan, plan_return_home_path
 from .engraving_workspace import check_path_workspace, validate_workspace
-from .joint_check import check_path_joints, evaluate_path_joints
+from .joint_check import (candidate_diagnostic_window, check_path_joints,
+                          diagnose_path_joint_candidates, evaluate_path_joints)
 from .preconditions import PreconditionEvidence, check_preconditions, check_robot_status, check_prepared_path
 from .robot_adapter import DoosanRobotAdapter, MockRobotAdapter, RobotState, StepResult, apply_tool_offset
 from .state_machine import run_process, run_preparation, run_prepared_process
@@ -1106,6 +1107,7 @@ class ProcessCoordinator:
         go_to_path_start_fn=None,
         return_home_fn=None,
         observation_cache=None, on_precheck_result=None,
+        on_candidate_diagnostic_start=None,
         preparation_required=False, measurement_only=False,
     ):
         if runtime_mode not in {"SIMULATION", "REAL"}:
@@ -1129,6 +1131,7 @@ class ProcessCoordinator:
         self._motion_uncertain = False
         self.observations = observation_cache or ObservationCache()
         self.on_precheck_result = on_precheck_result
+        self.on_candidate_diagnostic_start = on_candidate_diagnostic_start
         self.runtime_mode = runtime_mode
         self.real_adapter = real_adapter
         self.go_to_path_start_fn = go_to_path_start_fn
@@ -1695,6 +1698,47 @@ class ProcessCoordinator:
                         "inverse_kinematics_calls": main_evaluation.inverse_kinematics_calls,
                         "ik_elapsed_s": main_evaluation.elapsed_s,
                     })
+                eligible_candidate_failure = (
+                    checked.error_code == "VALIDATION_FAILED"
+                    or (checked.error_code == "NOT_READY"
+                        and checked.message.startswith("IK 실패:")))
+                diagnostic_scope = (
+                    candidate_diagnostic_window(plan, checked.observed_state)
+                    if eligible_candidate_failure else None)
+                if (self.runtime_mode == "REAL" and main_evaluation is not None
+                        and diagnostic_scope is not None):
+                    diagnostic_started = time.monotonic()
+                    scoped_plan, global_start, scope_metadata = diagnostic_scope
+                    diagnostic_reference = list(main_reference)
+                    if (global_start > 0
+                            and len(main_evaluation.joints_deg) >= global_start):
+                        diagnostic_reference = [
+                            math.radians(value)
+                            for value in main_evaluation.joints_deg[global_start - 1]]
+                    if self.on_candidate_diagnostic_start is not None:
+                        self.on_candidate_diagnostic_start(goal, config, scope_metadata)
+                    try:
+                        candidate_diagnostic = diagnose_path_joint_candidates(
+                            scoped_plan, loaded.adapter, list(offset), diagnostic_reference,
+                            context.joint_limits_deg, context.j6_margin_deg,
+                            cancel=context.cancel)
+                    except Exception as exc:
+                        # 진단 구현/서비스 실패는 기존 PRECHECK 판정을 바꾸지 않는다.
+                        candidate_diagnostic = {
+                            "mode": "DIAGNOSTIC_ONLY",
+                            "status": "INTERNAL_ERROR",
+                            "reason": type(exc).__name__,
+                            "used_for_execution_approval": False,
+                            "cartesian_solution_space_verified": False,
+                        }
+                    candidate_diagnostic["scope"] = scope_metadata
+                    checked.observed_state = dict(checked.observed_state)
+                    checked.observed_state["ik_candidate_diagnostic"] = candidate_diagnostic
+                    stage_metrics["candidate_diagnostic"] = {
+                        "stage_elapsed_s": max(0.0, time.monotonic() - diagnostic_started),
+                        "candidate_query_calls": int(
+                            candidate_diagnostic.get("candidate_query_calls", 0)),
+                    }
                 if checked.ok:
                     if signature != execution_signature(dict(loaded.path), context):
                         return StepResult("FAILED", "PROFILE_MISMATCH", "IK 중 경로/설정 변경", "execution_plan")
@@ -1996,7 +2040,9 @@ def create_ros_node(load_inputs: Callable[[Mapping], ExecutionInputs] = _missing
                 current_loader, journal=journal, runtime_mode=runtime_mode,
                 real_adapter=adapter, go_to_path_start_fn=go_to_path_start_fn,
                 return_home_fn=return_home_fn, observation_cache=self.observations,
-                on_precheck_result=self.report_precheck, measurement_only=measurement_only,
+                on_precheck_result=self.report_precheck,
+                on_candidate_diagnostic_start=self.report_candidate_diagnostic_start,
+                measurement_only=measurement_only,
                 preparation_required=preparation_required)
             self.preparation = None
             if enable_preparation:
@@ -2226,7 +2272,39 @@ def create_ros_node(load_inputs: Callable[[Mapping], ExecutionInputs] = _missing
             with self.lock:
                 self.profile_values = {k: config.get(k, "") for k in
                                        ("profile_snapshot_id", "profile_sha256")}
+            diagnostic = result.observed_state.get("ik_candidate_diagnostic")
+            if isinstance(diagnostic, Mapping):
+                status = diagnostic.get("status", "UNKNOWN")
+                spaces = diagnostic.get("selected_solution_spaces") or []
+                space_text = "→".join(str(value) for value in spaces) if spaces else "선택 없음"
+                if diagnostic.get("selected_solution_spaces_truncated"):
+                    space_text += "→…"
+                if diagnostic.get("failure_waypoint"):
+                    failed = diagnostic["failure_waypoint"]
+                    location = f"실패 {failed.get('segment_id', '—')}:{failed.get('index', '—')}"
+                else:
+                    location = "실패점 없음"
+                if diagnostic.get("j6_min_deg") is not None:
+                    j6 = f"J6 {diagnostic['j6_min_deg']}~{diagnostic['j6_max_deg']}°"
+                    margin = f"최소 잔여 {diagnostic.get('minimum_j6_remaining_deg', '—')}°"
+                else:
+                    j6, margin = "J6 계산 미완료", "최소 잔여 미확인"
+                message = (f"IK 후보 진단 {status}: space {space_text} · {j6} · {margin} · "
+                           f"{location} · 실행 승인 미사용 · Cartesian 동일성 미검증")
+                self.emit_event("DIAGNOSTIC", code="IK_CANDIDATE_DIAGNOSTIC",
+                                message=message,
+                                severity="INFO" if status == "SUCCEEDED" else "WARNING")
             self.report_alarm("PRECHECK", result)
+
+        def report_candidate_diagnostic_start(self, goal, config, scope):
+            with self.lock:
+                self.profile_values = {k: config.get(k, "") for k in
+                                       ("profile_snapshot_id", "profile_sha256")}
+                self.message = (f"정밀 IK 진단 중: {scope.get('segment_id', '—')} "
+                                f"{scope.get('window_start_index', '—')}~"
+                                f"{scope.get('window_end_index', '—')}번 점")
+            self.emit_event("DIAGNOSTIC", code="IK_CANDIDATE_DIAGNOSTIC_STARTED",
+                            message=self.message, severity="INFO")
 
         def report_alarm(self, phase, result):
             for event in self.alarms.update(self.alarm_scope(), phase, result):
