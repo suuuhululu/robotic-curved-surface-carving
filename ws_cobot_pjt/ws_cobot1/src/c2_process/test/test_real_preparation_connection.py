@@ -128,7 +128,13 @@ def test_real_runner_starts_persistent_state_observer_before_measurement_adapter
     config = copy.deepcopy(h.config)
     config.update(source_mode='REAL', load_id='ToolWeight_1')
     calls = []
-    starter = lambda current: calls.append(('observer', current))
+    class Observer:
+        def pause(self):
+            calls.append(('pause', None)); return True
+        def resume(self):
+            calls.append(('resume', None)); return True
+    def starter(current):
+        calls.append(('observer', current)); return Observer()
     class Adapter:
         def close(self): calls.append(('close', None))
     monkeypatch.setattr(process_adapter, 'create_process_measurement_adapter',
@@ -141,7 +147,8 @@ def test_real_runner_starts_persistent_state_observer_before_measurement_adapter
         state_observer_starter=starter)
     result = runner(dict(goal, source_mode='REAL'), config, threading.Event(), lambda event: None)
     assert result.outcome in {'FAILED', 'UNKNOWN'}
-    assert [name for name, _ in calls[:2]] == ['observer', 'adapter']
+    assert [name for name, _ in calls] == [
+        'observer', 'pause', 'adapter', 'close', 'resume']
 
 
 def test_real_runner_observer_start_failure_is_not_ready_without_adapter(tmp_path, monkeypatch):

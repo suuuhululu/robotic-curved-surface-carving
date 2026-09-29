@@ -541,17 +541,21 @@ def make_real_measurement_runner(coordinator, node, *, evidence_provider,
         try:
             # 설정 스냅샷 검증 후, 모션/측정 어댑터 생성 전에 한 번 시작한다.
             # 관측기는 성공·실패·취소 뒤에도 유지되고 공정 노드 종료 때만 닫힌다.
-            state_observer_starter(config)
+            state_observer = state_observer_starter(config)
         except Exception as exc:
             return StepResult('FAILED','NOT_READY',
                 '공정 상태 관측기 시작 실패: '+str(exc),'robot_status')
-        ctx=MeasurementContext(goal['measurement_id'],goal['preparation_id'],'REAL',
-            cancel=cancel,motion_lock=coordinator.motion_lock,
-            profile_snapshot_id=goal['input_profile_snapshot_id'],profile_sha256=goal['input_profile_sha256'])
-        adapter=create_process_measurement_adapter(node,config,ctx,
-            motion_lock=coordinator.motion_lock,cancel=cancel,evidence_provider=evidence_provider,
-            evidence_max_age_s=evidence_max_age_s,scene_check=scene_check)
+        pause = getattr(state_observer, 'pause', None)
+        resume = getattr(state_observer, 'resume', None)
+        observer_paused = callable(pause) and callable(resume) and pause()
+        adapter = None
         try:
+            ctx=MeasurementContext(goal['measurement_id'],goal['preparation_id'],'REAL',
+                cancel=cancel,motion_lock=coordinator.motion_lock,
+                profile_snapshot_id=goal['input_profile_snapshot_id'],profile_sha256=goal['input_profile_sha256'])
+            adapter=create_process_measurement_adapter(node,config,ctx,
+                motion_lock=coordinator.motion_lock,cancel=cancel,evidence_provider=evidence_provider,
+                evidence_max_age_s=evidence_max_age_s,scene_check=scene_check)
             # readiness도 같은 원본을 동작 전에 다시 검사한다. 장착/OFF는 수동 절차다.
             raw=evidence_provider(ctx)
             item=raw.get('control_authority',{}) if isinstance(raw,dict) else {}
@@ -574,6 +578,9 @@ def make_real_measurement_runner(coordinator, node, *, evidence_provider,
                 stop_latch_recorder(result, cancel)
             return result
         finally:
-            adapter.close()  # 공유 Lock/Event/노드 수명은 종료하지 않음
+            if adapter is not None:
+                adapter.close()  # 공유 Lock/Event/노드 수명은 종료하지 않음
+            if observer_paused:
+                resume()
     run.real_preparation_ready=True
     return run

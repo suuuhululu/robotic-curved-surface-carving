@@ -10,6 +10,52 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+
+def test_pause_discards_pending_query_and_requires_matching_resume():
+    import threading
+    from c2_process.process_state_observer import ProcessStateObserver
+
+    class Future:
+        def __init__(self):
+            self.cancelled = False
+
+        def done(self):
+            return False
+
+        def cancel(self):
+            self.cancelled = True
+
+    class Cache:
+        def __init__(self):
+            self.captures = []
+
+        def capture(self, *args, **kwargs):
+            self.captures.append((args, kwargs))
+
+    observer = object.__new__(ProcessStateObserver)
+    observer.lock = threading.RLock()
+    observer.pending = {'futures': [Future()]}
+    future = observer.pending['futures'][0]
+    observer.closed = False
+    observer.pause_depth = 0
+    observer.recovery_pending = False
+    observer.recovery_deadline = 0.0
+    observer.timeout = 0.5
+    observer.cache = Cache()
+    observer.max_age = 0.5
+
+    assert observer.pause() is True
+    assert observer.pause() is True
+    assert observer.pending is None and future.cancelled
+    assert len(observer.cache.captures) == 1
+    assert observer.resume() is False
+    assert observer.pause_depth == 1
+    assert observer.resume() is True
+    assert observer.pause_depth == 0
+    assert observer.defer_binding_invalidation(now=observer.recovery_deadline) is True
+    assert observer.defer_binding_invalidation(now=observer.recovery_deadline + .001) is False
+    assert observer.resume() is False
+
 @pytest.mark.skipif(os.environ.get('C2_RUN_OBSERVER_ROS_TEST') != '1',
                     reason='격리 ROS 환경과 빌드된 c2_interfaces 필요')
 def test_existing_publisher_reads_observations_before_during_after_measurement():

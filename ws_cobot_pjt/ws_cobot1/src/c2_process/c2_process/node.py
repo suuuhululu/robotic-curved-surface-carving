@@ -1019,13 +1019,16 @@ def prepared_binding_observation_valid(values, authority_owner) -> bool:
                 and observation.valid and observation.has_control)
 
 
-def defer_prepared_binding_invalidation(status, phase, active_run) -> bool:
+def defer_prepared_binding_invalidation(status, phase, active_run, observer=None) -> bool:
     """장시간 PRECHECK 중의 일시적인 관측 만료만 BIND 삭제에서 제외한다.
 
     실행 허가를 만드는 함수가 아니다. PRECHECK가 끝난 뒤에는 새로 읽은 로봇
     상태·제어권·정지 상태와 동일 BIND를 다시 검사해야 한다.
     """
-    return status == "RUNNING" and phase == "PRECHECK" and active_run is not None
+    if status == "RUNNING" and phase == "PRECHECK" and active_run is not None:
+        return True
+    recovering = getattr(observer, "defer_binding_invalidation", None)
+    return bool(callable(recovering) and recovering())
 
 
 def read_real_execution_evidence(node, profile_snapshot_id):
@@ -2231,16 +2234,23 @@ def create_ros_node(load_inputs: Callable[[Mapping], ExecutionInputs] = _missing
                     and has_bound_preparation):
                 authority_owner = getattr(self, "real_preparation_observations", None)
                 if not prepared_binding_observation_valid(values, authority_owner):
-                    if defer_prepared_binding_invalidation(status, phase, active_run):
+                    observer = getattr(self, "_c2_process_state_observer", None)
+                    if defer_prepared_binding_invalidation(status, phase, active_run, observer):
                         if not self._precheck_binding_warning_active:
                             self._precheck_binding_warning_active = True
                             self.get_logger().warn(
-                                "PRECHECK 중 관측 만료: 준비 BIND 유지, ENTRY 전 재검사 예정")
+                                "관측 일시중단/복구 중: 준비 BIND 유지, 실행 전 재검사 예정")
                     else:
-                        self._precheck_binding_warning_active = False
-                        self.preparation.invalidate()
-                        self.get_logger().warn(
-                            "준비 BIND 무효화: 제어권/로봇 연결·관측 상실 또는 보호정지")
+                        # observer가 정상 응답을 기록한 직후의 교차 스레드 경합이면
+                        # 최신 캐시를 한 번 더 읽고 정상 BIND를 잘못 지우지 않는다.
+                        values = self.observations.values()
+                        if not prepared_binding_observation_valid(values, authority_owner):
+                            self._precheck_binding_warning_active = False
+                            self.preparation.invalidate()
+                            self.get_logger().warn(
+                                "준비 BIND 무효화: 제어권/로봇 연결·관측 상실 또는 보호정지")
+                        else:
+                            self._precheck_binding_warning_active = False
                 else:
                     self._precheck_binding_warning_active = False
             msg.joints = values["joints"]
@@ -2386,11 +2396,26 @@ def create_ros_node(load_inputs: Callable[[Mapping], ExecutionInputs] = _missing
                 goal_handle.publish_feedback(packet)
 
             def on_phase(name):
+                nonlocal observer_paused
+                # PRECHECK의 대량 IK 서비스 호출과 5 Hz 상태 조회를 겹치지 않는다.
+                # 실제 이동 직전부터는 ProcessState 관측을 다시 시작한다.
+                if name != "PRECHECK" and observer_paused:
+                    observer.resume()
+                    observer_paused = False
                 feedback(phase=name)
                 self.emit_event("PHASE_CHANGED", message=f"{name} 시작")
 
-            result = self.coordinator.execute(goal, on_phase=on_phase,
-                                              on_progress=lambda value: feedback(progress=value))
+            observer = getattr(self, "_c2_process_state_observer", None)
+            observer_paused = False
+            if callable(getattr(observer, "pause", None)) and callable(getattr(observer, "resume", None)):
+                observer_paused = observer.pause()
+            try:
+                result = self.coordinator.execute(
+                    goal, on_phase=on_phase,
+                    on_progress=lambda value: feedback(progress=value))
+            finally:
+                if observer_paused:
+                    observer.resume()
             with self.lock:
                 self.status = result.outcome
                 self.stop_state = "CONFIRMED" if result.outcome == "STOPPED" else self.stop_state

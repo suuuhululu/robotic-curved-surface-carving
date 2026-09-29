@@ -270,7 +270,16 @@ def test_execute_result_preserves_failure_for_hmi(
         set_message_fields=lambda *_args: None))
 
     node = create_ros_node(enable_preparation=False)
-    node.coordinator.execute = lambda *_args, **_kwargs: copy.deepcopy(result)
+    observer_calls = []
+    class Observer:
+        def pause(self): observer_calls.append('pause'); return True
+        def resume(self): observer_calls.append('resume'); return True
+    node._c2_process_state_observer = Observer()
+    def execute(*_args, **kwargs):
+        kwargs['on_phase']('PRECHECK')
+        kwargs['on_phase']('ENTRY')
+        return copy.deepcopy(result)
+    node.coordinator.execute = execute
     calls = []
     request = NS(schema_version=2, request_id='request', run_id='run', source_mode='SIMULATION',
                  path_id='path', path_version=1, path_sha256='a' * 64)
@@ -288,6 +297,7 @@ def test_execute_result_preserves_failure_for_hmi(
     assert output.message == result.message
     assert output.last_completed_segment_id == result.observed_state['last_completed_segment_id']
     assert calls == [terminal]
+    assert observer_calls == ['pause', 'resume']
 
 
 @pytest.mark.parametrize('mismatch', [[0., -.09, 0.], [0., 0., .02], None])
