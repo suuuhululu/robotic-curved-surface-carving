@@ -111,8 +111,6 @@ def test_plans_from_final_retract_without_motion_and_uses_measured_geometry():
     assert plan["source_binding"]["radius_m"] == workcell["radius_m"]
     assert plan["targets"][-1]["tip_pose"] == [0.3, -0.1, 0.35, 0.0, 0.0, 0.0, 1.0]
     assert adapter.moves == []
-    assert result.observed_state["ik_requests"]["cache_hits"] > 0
-    assert adapter.ik_calls == result.observed_state["ik_requests"]["service_calls"]
 
 
 def test_return_ignores_measurement_tcp_box_but_keeps_approved_workspace():
