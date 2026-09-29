@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from c2_process.robot_adapter import MockRobotAdapter, matrix_to_quat  # noqa: E402
-from c2_process.joint_check import (check_path_joints,
+from c2_process.joint_check import (candidate_diagnostic_window, check_path_joints,
                                     diagnose_path_joint_candidates)  # noqa: E402
 
 
@@ -124,6 +124,21 @@ def test_candidate_diagnostic_keeps_service_failure_distinct_from_no_solution():
     assert report['reason'] == 'SERVICE_ERROR_WITHOUT_SAFE_CANDIDATE'
     assert report['failure_waypoint']['query_status'] == 'SERVICE_ERROR'
     assert report['failure_waypoint']['service_error_spaces'] == list(range(8))
+
+
+def test_candidate_diagnostic_window_limits_query_to_failure_neighborhood():
+    path = arc_path(0, 0, n=20)
+    scoped, global_start, metadata = candidate_diagnostic_window(
+        path, {'worst': {'segment_id': 's1', 'index': 12}}, radius=3)
+
+    assert global_start == 9
+    assert len(scoped['segments'][0]['waypoints']) == 7
+    assert scoped['inspection_scope'] == 'IK_CANDIDATE_FAILURE_WINDOW'
+    assert metadata == {
+        'segment_id': 's1', 'failure_index': 12,
+        'window_start_index': 9, 'window_end_index': 15,
+        'waypoint_count': 7, 'global_start_index': 9,
+    }
 
 
 def test_unwrap_keeps_continuity_across_180():

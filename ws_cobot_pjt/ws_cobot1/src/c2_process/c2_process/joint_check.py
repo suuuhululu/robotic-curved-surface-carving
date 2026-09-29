@@ -9,7 +9,7 @@ import json
 import math
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Mapping, Optional
 
 from .robot_adapter import RobotAdapter, StepResult
 
@@ -159,6 +159,42 @@ def check_path_joints(path: Dict, adapter: RobotAdapter,
     return evaluate_path_joints(
         path, adapter, tool_offset_m, ref_joints_rad,
         limits_deg=limits_deg, j6_margin_deg=j6_margin_deg, cancel=cancel).result
+
+
+def candidate_diagnostic_window(path: Dict, observed_state: Mapping,
+                                radius: int = 5):
+    """관절/IK 실패점 앞뒤의 제한된 진단 경로와 전체 경로 시작 index를 만든다."""
+    if not isinstance(path, dict) or not isinstance(observed_state, Mapping):
+        return None
+    detail = observed_state.get("worst")
+    if not isinstance(detail, Mapping):
+        detail = observed_state
+    segment_id, index = detail.get("segment_id"), detail.get("index")
+    if not isinstance(segment_id, str) or type(index) is not int or index < 0:
+        return None
+    segments = path.get("segments")
+    if not isinstance(segments, list) or type(radius) is not int or radius < 0:
+        return None
+    global_offset = 0
+    for segment in segments:
+        waypoints = segment.get("waypoints") or []
+        if segment.get("segment_id") != segment_id:
+            global_offset += len(waypoints)
+            continue
+        if index >= len(waypoints):
+            return None
+        start, end = max(0, index - radius), min(len(waypoints), index + radius + 1)
+        scoped_segment = dict(segment)
+        scoped_segment["waypoints"] = [list(point) for point in waypoints[start:end]]
+        scoped = dict(path)
+        scoped["inspection_scope"] = "IK_CANDIDATE_FAILURE_WINDOW"
+        scoped["segments"] = [scoped_segment]
+        metadata = dict(segment_id=segment_id, failure_index=index,
+                        window_start_index=start, window_end_index=end - 1,
+                        waypoint_count=end - start,
+                        global_start_index=global_offset + start)
+        return scoped, global_offset + start, metadata
+    return None
 
 
 def diagnose_path_joint_candidates(path: Dict, adapter: RobotAdapter,
