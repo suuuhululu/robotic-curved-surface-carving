@@ -505,6 +505,8 @@ def measure_workpiece(adapter, workcell, profiles, context, on_progress=None):
     observed["point_attempts"]=point_attempts
     # 외부 계약. move_attempts 의 내부 tuple 키를 그대로 내보내지 않는다 (JSON 직렬화 불가).
     observed["move_recoveries"]=[]
+    # 복구 재시도 때 현재 목표 한 구간만 다시 검사한 기록. plans 는 계획 단위 preflight 만 센다.
+    observed["target_rechecks"]=[]
 
     def event(stage,status,message,point_index=0,values=None):
         item=dict(measurement_id=context.measurement_id,sequence=len(observed["events"])+1,
@@ -552,9 +554,36 @@ def measure_workpiece(adapter, workcell, profiles, context, on_progress=None):
         observed["plans"].append(dict(plan_sha256=plan_hash,checked_at=context.utc_now(),report=deepcopy(report.observed_state)))
         if not execute:
             return
-        for position,step in enumerate(steps):
+        for step in steps:
+            execute_with_recovery(step)
+
+    def recheck_target(step):
+        """복구 재시도 전, 실패한 현재 목표 한 구간만 현재 위치에서 다시 검사한다.
+
+        남은 계획 전체(steps[position:])는 다시 검사하지 않는다. 이미 검사한 목표만
+        대상이며, 검사 항목(현장 간섭·IK/FK·관절·소유권)은 기존 preflight 와 같다.
+        """
+        check()
+        single=getattr(adapter,"recheck_measurement_target",None)
+        if callable(single):
+            report=single(deepcopy(step),deepcopy(w),deepcopy(p),context)
+        else:
+            # 목표별 검사 결과를 보관하지 않는 백엔드(모의)는 한 구간 preflight 로 대신한다.
+            report=adapter.preflight_measurement([deepcopy(step)],deepcopy(w),deepcopy(p),context)
+        if not isinstance(report,StepResult) or not report.ok:
+            raise MeasurementError(getattr(report,"error_code","NOT_READY"),getattr(report,"message","재시도 목표 검사 미완료"),getattr(report,"outcome","UNKNOWN"))
+        required=("all_segments_checked","probe_envelopes_checked","ownership_confirmed","tcp_load_match")
+        if any(report.observed_state.get(k) is not True for k in required):
+            raise MeasurementError("NOT_READY","재시도 목표 검사 필수 항목 미확인")
+        observed["target_rechecks"].append(dict(label=step["label"],checked_at=context.utc_now(),
+                                                report=deepcopy(report.observed_state)))
+
+    def execute_with_recovery(step):
+        """한 step 을 실행하고, 복구 가능한 오류면 같은 목표만 제한 횟수 재시도한다 (재귀 없음)."""
+        while True:
             try:
                 execute_one(step)
+                return
             except MoveRecoveryError as exc:
                 # 추종/도달 품질 오류만 온다. 허용 오차를 넓히지 않고 다시 정렬해서 같은 step 을 재실행한다.
                 if w.get("move_recovery_max_attempts",1)==1:
@@ -570,7 +599,6 @@ def measure_workpiece(adapter, workcell, profiles, context, on_progress=None):
                 record["attempts"]=move_attempts[key];record["reasons"].append(exc.code)
                 # 접수 여부가 불명확한 명령이 남아 있을 수 있으므로 먼저 실제 정지를 확인한다.
                 confirmed_stop()
-                current=state()["tip_pose"]
                 index=_point_index_of(step["label"])
                 event(_recovery_stage(step["label"]),"RUNNING","이동 오차 복구: 정지 확인·현재 위치에서 재정렬",
                       index,dict(attempt=move_attempts[key],reason=exc.code,label=step["label"],
@@ -578,9 +606,8 @@ def measure_workpiece(adapter, workcell, profiles, context, on_progress=None):
                 if move_attempts[key]>=w["move_recovery_max_attempts"]:
                     raise MeasurementError("RECOVERY_REQUIRED",
                         f"{step['label']} 이동 {move_attempts[key]}회 복구 실패: {exc}")
-                # 현재 위치 기준으로 같은 step 부터 남은 계획을 전부 다시 검사(IK·현장)한 뒤 재실행한다.
-                run(steps[position:])
-                return
+                # 현재 위치에서 이 목표 한 구간만 다시 검사한 뒤 같은 step 을 재실행한다.
+                recheck_target(step)
             except PointMeasurementError as exc:
                 if (step["kind"]!="PROBE" or not step["point_index"] or
                         exc.outcome!="FAILED" or exc.code not in ("UNSTABLE_BASELINE","CONTACT_NOT_FOUND","CONTACT_OUT_OF_RANGE") or
@@ -609,14 +636,13 @@ def measure_workpiece(adapter, workcell, profiles, context, on_progress=None):
                 elif travel < -tolerance and not exhausted:
                     # 시작점 바깥은 안전한 정지 위치다. 재시도할 때만 시작점으로 접근한다.
                     recovery.append(_move(step["start_pose"],"approach",f"point_{index}_approach"))
+                # 시작점 복구 이동도 이 한 구간만 검사한다. 이미 허용오차 안이면 MOVE 없이
+                # probe 가 새 baseline 부터 다시 확보한다.
+                for move in recovery:
+                    recheck_target(move)
+                    execute_with_recovery(move)
                 if exhausted:
-                    if recovery:
-                        run(recovery)
                     raise MeasurementError("RECOVERY_REQUIRED",f"{index}번 점 {point_attempts[index]}회 측정 실패: {exc}")
-                # 복구와 재시도를 한 계획으로 검사해 같은 시작점을 연속 명령하지 않는다.
-                # 이미 시작점 허용오차 안이면 MOVE 없이 probe가 새 baseline부터 다시 확보한다.
-                run([*recovery,*steps[position:]])
-                return
 
     def confirmed_stop():
         stopped=adapter.stop_measurement(deepcopy(p["stop"]))
