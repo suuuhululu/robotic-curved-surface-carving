@@ -1,39 +1,40 @@
 # 팀 ROS 개발 디렉토리
 
-9/19 현재 c2_process는 [고정 드릴 6개 모듈](../../docs/SYSTEM_STRUCTURE.md)을 목표로 한다. 집기·그리퍼 제어 모듈은 만들지 않고 cleaning은 담당 브랜치 보관 대상으로 둔다. 아래 실제 파일과 목표 파일을 구분한다.
-
-`c2_interfaces`·`c2_path`·`c2_process`의 개발 폴더를 합의한 [목표 구조](../../docs/SYSTEM_STRUCTURE.md)에 맞춰 준비했다. Git은 빈 디렉토리를 기록하지 않으므로 아직 소스가 없는 하위 폴더는 `.gitkeep`으로 보존한다. 실제 구현 파일이 들어오면 해당 `.gitkeep`을 제거할 수 있다.
-
-**2026-09-19 확인:** `c2_interfaces`의 공통 타입 5개·패키지 빌드 설정을 구현하고 Jazzy에서 확인했다. `c2_process`에는 `robot_adapter.py`와 시험 소스가 있다. `c2_path`·`c2_process`의 노드·패키지 빌드 설정과 전체 공정 연동은 미구현이다. 기존 `clay_carving`·`clay_hmi`·전용 실행 문서는 사용자 요청으로 로컬 보관 후 제거했다. [보관·복구 기록](../../docs/LEGACY_CLAY_ARCHIVE.md), [시스템 아키텍처](../../docs/architecture/README.md).
+> 기준: 2026-09-30 PR #99 head `3d882f6`. 세 패키지의 노드·빌드 설정이 모두
+> 존재한다. 이전 9/19의 “노드·패키지 미구현” 설명은 현재 상태가 아니다.
 
 ```text
 src/
-├── README.md
-├── c2_interfaces/          # 공통 Action·Service·Topic 타입 구현
-│   ├── README.md
-│   ├── package.xml
-│   ├── CMakeLists.txt
-│   ├── action/
-│   ├── srv/
-│   ├── msg/
-│   └── test/
-├── c2_path/                # 좌표·경로 생성 개발 위치
-│   ├── README.md
-│   ├── c2_path/
-│   └── resource/
-└── c2_process/             # 어댑터 소스 존재, 노드·빌드 설정 미구현
-    ├── README.md
-    ├── c2_process/         # __init__.py · robot_adapter.py
-    ├── test/              # 모의 시험 · 별도 실기 확인 스크립트
-    ├── config/
-    ├── launch/
-    └── resource/
+├── c2_interfaces/   # 공통 Action 3 · Service 1 · Message 2
+├── c2_path/         # 이미지→2D→원통 3D 경로·검증 Action 서버
+└── c2_process/      # 준비 측정·BIND·검사·조각·정지 공정 노드
 ```
 
-| 개발 위치 | 시작할 작업 |
-| --- | --- |
-| [c2_interfaces](c2_interfaces/README.md) | 제공 타입을 빌드·source하고 각 담당 노드에서 의존성으로 사용 |
-| [c2_path](c2_path/README.md) | 이미지·설정 입력부터 경로·검증 결과까지 모의 입출력 연결 |
-| [c2_process](c2_process/README.md) | 모의 장치로 공정 단계·완료·오류·정지 처리를 먼저 연결 |
+| 패키지 | 실행 책임 | 주요 진입점 |
+| --- | --- | --- |
+| [c2_interfaces](c2_interfaces/README.md) | 송수신 PC가 함께 빌드할 고정 드릴 v2 타입. 실행 노드는 없음 | `ros2 interface show ...` |
+| [c2_path](c2_path/README.md) | 경로 생성과 파일·기하 검증. 로봇 모션을 실행하지 않음 | `path_planner_node` |
+| [c2_process](c2_process/README.md) | MEASURE/BIND, PRECHECK, ENTRY, ENGRAVE, RETURN_HOME, 정지·상태 | `process_controller_node`, `real_preparation_node`, `real_process_node`, `virtual_cell_node` |
 
-시스템 모니터의 ROS 연결 모듈은 [backend/app](../../backend/README.md)에 개발한다. 별도 `c2_hmi`·그리퍼 패키지는 만들지 않는다. 전체 작업 규칙은 루트 [AGENTS.md](../../../AGENTS.md), 송수신 계약은 [인터페이스 명세](../../docs/INTERFACE_RECOMMENDATION.md)를 따른다.
+시스템 모니터의 ROS 클라이언트는 별도 ROS 패키지가 아니라
+[`backend/app/ros_bridge.py`](../../backend/README.md)의 `monitor_gateway_node`다.
+화면은 HTTP·WebSocket으로만 서버와 통신한다. 별도 `c2_hmi`나 그리퍼 제어 패키지를
+만들지 않는다.
+
+빌드 순서는 외부 두산 overlay 뒤 팀 overlay다.
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source "$C2_DSR_WS/install/local_setup.bash"
+cd ws_cobot_pjt/ws_cobot1
+colcon build --symlink-install
+source install/local_setup.bash
+```
+
+checkout 안 `ws_dsr/src`에 전체 외부 원본이 없으면 그 위치에서 드라이버를 빌드하지
+않는다. 환경 구성은 [로컬 실행환경](../../../docs/LOCAL_ENVIRONMENT.md), 노드·파일
+책임은 [시스템 구조](../../docs/SYSTEM_STRUCTURE.md), 통신 계약은
+[인터페이스](../../docs/INTERFACE_RECOMMENDATION.md)를 따른다.
+
+기존 `clay_carving`·`clay_hmi`·자동 집기/청소 코드는 현재 공정에 복원하지 않는다.
+[보관 기록](../../docs/LEGACY_CLAY_ARCHIVE.md)은 역사 자료다.

@@ -1,6 +1,6 @@
 # 워크스페이스와 실행 PC
 
-기준: 2026-09-25 `origin/main` `987a3b7`. 프로젝트 기준은 M0609·ROS 2 Jazzy다. **팀 소스의 구현 상태와 각 PC의 설치·동작 상태는 다르다.** 9/17~23의 변경 경과는 날짜별 일지와 검증 기록에 보존한다.
+기준: 2026-09-30 PR #99 head `3d882f6`. 프로젝트 기준은 M0609·ROS 2 Jazzy다. **팀 소스의 구현 상태와 각 PC의 설치·동작 상태는 다르다.** 9/17~23의 변경 경과는 날짜별 일지와 검증 기록에 보존한다.
 
 ## 저장소 배치
 
@@ -13,6 +13,12 @@
 | `ws_cobot_pjt/docs/`, `docs/` | 시스템 계약·검증 기록·일지, 공통 환경·협업 문서 |
 
 `c2_process/node.py`, `setup.py`, `PrepareWorkpiece.action`은 main에 있다. `c2_process/launch/`에는 `.gitkeep`만 있고 `process.launch.py`는 없다. 과거 계획의 `workcell.yaml`·`tools.yaml`도 없다. 현재 설정은 코드가 읽는 JSON·HMI 관리 자산 및 실행 프로파일 계약을 확인한다. 존재하지 않는 launch/YAML을 실행 절차로 안내하지 않는다.
+
+2026-09-30 현재 checkout의 `ws_dsr/src`에는 전체 외부 원본이 없고 추적 패치
+4개만 있다. 현재 셸의 두산 패키지는 checkout 밖의 기존 설치 overlay에서
+조회됐다. 외부 워크스페이스와 저장소 위치가 같다고 가정하지 말고
+`C2_DSR_WS`로 실제 설치 위치를 지정한다. 확인값과 명령은
+[로컬 실행환경](LOCAL_ENVIRONMENT.md)에 기록했다.
 
 ## PC와 워크스페이스의 역할
 
@@ -41,7 +47,7 @@ source ws_cobot_pjt/ws_cobot1/install/local_setup.bash
 
 이 명령은 소스가 준비된 워크스페이스의 빌드 예시이며 로봇을 구동하지 않는다. `ws_dsr`가 없는 편집 PC에서는 팀 코드 검토·문서·Python 모의 시험을 할 수 있지만 외부 드라이버의 실기 준비 완료라고 표시하지 않는다. `c2_process`는 `dsr_msgs2` 실행 의존성이 있으므로 실행 PC의 외부 overlay와 같은 Jazzy 환경을 확인한다.
 
-HMI 실행기 `run_monitor.py`의 기본은 MOCK이다. ROS SIM 공정 연결은 `--transport ros --process-integration`을 사용하고 공정 노드는 별도 기동한다. REAL HMI는 `--transport ros --mode REAL` 및 확인된 준비·실행 설정을 받는다. REAL 공정 진입점 `real_process_node`와 외부 드라이버도 별도 기동 대상이다. 구체적인 옵션은 [팀 실행 안내](../ws_cobot_pjt/ws_cobot1/doc/README.md), [HMI 안내](../ws_cobot_pjt/backend/README.md)에 있다. 코드와 가상 장치 시험이 존재하지만 실제 M0609의 측정→경로→조각 전체 완료는 별도 현장 검증 항목이다.
+HMI 실행기 `run_monitor.py`의 기본은 MOCK이다. ROS SIM 공정 연결은 `--transport ros --process-integration`을 사용하고 공정 노드는 별도 기동한다. REAL HMI는 `--transport ros --mode REAL` 및 확인된 준비·실행 설정을 받는다. REAL 공정 진입점 `real_process_node`와 외부 드라이버도 별도 기동 대상이다. 구체적인 옵션은 [로컬 실행환경](LOCAL_ENVIRONMENT.md), [팀 실행 안내](../ws_cobot_pjt/ws_cobot1/doc/README.md), [HMI 안내](../ws_cobot_pjt/backend/README.md)에 있다. 코드와 가상 장치 시험이 존재하지만 실제 M0609의 측정→경로→조각 전체 완료는 별도 현장 검증 항목이다.
 
 ## 팀 공유 절차
 

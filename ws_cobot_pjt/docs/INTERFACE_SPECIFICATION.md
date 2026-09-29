@@ -1,6 +1,6 @@
 # 새김 Interface Specification
 
-> 기준: 2026-09-25 `origin/main` `987a3b7`(PR #90 병합). 이 문서는 발표·교차 검토용 인터페이스 명세다. 설명보다 같은 커밋의 실제 코드와 `c2_interfaces` 타입을 우선한다. 실제 장치 설치본이 다르면 송수신 PC의 타입과 설정을 다시 대조한다.
+> 기준: 2026-09-30 PR #99 head `3d882f6` (`main_v11` 통합). 이 문서는 발표·교차 검토용 인터페이스 명세다. 설명보다 같은 커밋의 실제 코드와 `c2_interfaces` 타입을 우선한다. 실제 장치 설치본이 다르면 송수신 PC의 타입과 설정을 다시 대조한다.
 
 ## 1. 목적과 적용 범위
 
@@ -181,6 +181,7 @@ HTTP 준비 입력에는 `schema_version`, `source_mode`, `preparation_id`, `mea
 | Feedback | 요청·준비·측정 ID, `operation`, `stage`, `progress`, 완료/전체 옆면 점 수, `elapsed_s`, `message` |
 
 - `MEASURE`는 측정을 수행하며 BIND 관련 네 ID·해시를 빈 문자열로 보낸다.
+- 움직이기 전 기준선 실패는 명령 미전송과 시작점 유지가 확인될 때 무이동으로 다시 수집한다. 탐색 뒤 접촉 실패만 검사된 후퇴 대상이다. 옆면 fit은 최대 한 이상점을 제외할 수 있지만 FIT 단계 재측정은 하지 않는다.
 - `BIND_SNAPSHOT`은 저장된 측정 원본과 새 불변 스냅샷을 대조하며 로봇을 움직이지 않는다.
 - 준비 취소는 표준 Action CancelGoal을 사용한다. `/c2/stop_process`에 준비 ID를 넣지 않는다.
 - 성공한 BIND는 `outcome=SUCCEEDED`, `snapshot_bound=true`, `geometry_ready=true`, `stop_confirmed=true`, `partial=false`, `error_code=NONE`을 모두 만족해야 한다.
@@ -250,6 +251,7 @@ HTTP 준비 입력에는 `schema_version`, `source_mode`, `preparation_id`, `mea
 - 새 실행 요청마다 서버가 새 `run_id`를 만든다.
 - `UNKNOWN`은 다른 요청이나 늦게 도착한 성공으로 자동 해제하지 않는다.
 - 준비/생성/실행/미확인 작업이 있으면 겹치는 작업은 `BUSY`로 거절한다.
+- 진행 중 PRECHECK·측정·조각을 프로세스 종료 뒤 이어가는 pause/resume 계약은 없다. 다음 날 운용은 확인된 정지와 새 준비부터 시작한다.
 
 ## 7. 주요 오류와 HMI 조치
 
