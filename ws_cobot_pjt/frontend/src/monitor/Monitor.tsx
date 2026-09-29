@@ -137,6 +137,11 @@ export default function Monitor() {
       event.run_id === run?.run_id &&
       event.code === "IK_CANDIDATE_DIAGNOSTIC",
   );
+  const returnHomeDiagnostic = snapshot?.events.find(
+    (event) =>
+      event.run_id === run?.run_id &&
+      event.code === "RETURN_HOME_CANDIDATE_DIAGNOSTIC",
+  );
   const preparation = snapshot?.preparation.current;
   const preparationRunning = activePreparation(preparation?.state);
   const fresh = connected && snapshot?.connection === "CONNECTED";
@@ -1395,6 +1400,11 @@ export default function Monitor() {
                     {ikCandidateDiagnostic && (
                       <p className="ik-candidate-diagnostic" role="status">
                         {ikCandidateDiagnostic.message}
+                      </p>
+                    )}
+                    {returnHomeDiagnostic && (
+                      <p className="error-detail" role="status">
+                        {returnHomeDiagnostic.message}
                       </p>
                     )}
                     {snapshot?.execution_pending && run && !active(run) && (

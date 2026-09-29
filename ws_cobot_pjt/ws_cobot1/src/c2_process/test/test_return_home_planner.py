@@ -113,6 +113,47 @@ def test_plans_from_final_retract_without_motion_and_uses_measured_geometry():
     assert adapter.moves == []
 
 
+def test_return_ignores_measurement_tcp_box_but_keeps_approved_workspace():
+    adapter, path, workcell, profiles, context, limits = fixture()
+    # 측정 접근 전용 상자는 복귀 경로의 승인 작업영역이 아니다. 모든 복귀 TCP를
+    # 일부러 상자 밖에 두어도 engraving_workspace와 형상 검사를 통과해야 한다.
+    workcell["trial_scene"] = {
+        "tcp_min_m": [0.265, -0.17, 0.19],
+        "tcp_max_m": [0.59, 0.18, 0.335],
+    }
+
+    result = plan_return_home_path(
+        path, workcell, adapter, adapter.observe(), adapter.tool_offset_m,
+        limits, 0.0, profiles, plan_signature="plan-signature",
+        cancel=context.cancel)
+
+    assert result.ok, result
+    assert result.observed_state["return_home_plan"]["checks"]["geometry"][
+        "checked_samples"] > 0
+
+
+def test_return_still_rejects_stand_clearance_outside_measurement_box_policy():
+    adapter, path, workcell, profiles, context, limits = fixture()
+    workcell["trial_scene"] = {
+        "tcp_min_m": [-1.0, -1.0, -1.0],
+        "tcp_max_m": [1.0, 1.0, 1.0],
+    }
+    workcell["bottom_z_m"] = 0.146
+
+    result = plan_return_home_path(
+        path, workcell, adapter, adapter.observe(), adapter.tool_offset_m,
+        limits, 0.0, profiles, plan_signature="plan-signature",
+        cancel=context.cancel)
+
+    assert (result.outcome, result.error_code) == (
+        "FAILED", "RETURN_HOME_PATH_UNAVAILABLE")
+    assert "받침대" in result.observed_state["rejected_candidates"][0]["reason"]
+    assert result.observed_state["static_geometry_rejected"] is True
+    assert result.observed_state["ik_metrics"]["inverse_kinematics_calls"] == 0
+    assert adapter.ik_calls == 0
+    assert adapter.moves == []
+
+
 def test_return_reuses_predicted_end_and_joint_sequence():
     adapter, path, workcell, profiles, context, limits = fixture()
 
@@ -167,6 +208,9 @@ def test_tool_tip_floor_failure_rejects_plan_without_motion():
 
     assert (result.outcome, result.error_code) == (
         "FAILED", "RETURN_HOME_PATH_UNAVAILABLE")
+    assert result.observed_state["static_geometry_rejected"] is True
+    assert result.observed_state["ik_metrics"]["inverse_kinematics_calls"] == 0
+    assert adapter.ik_calls == 0
     assert adapter.moves == []
 
 

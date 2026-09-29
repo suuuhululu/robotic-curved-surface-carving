@@ -2272,6 +2272,18 @@ def create_ros_node(load_inputs: Callable[[Mapping], ExecutionInputs] = _missing
             with self.lock:
                 self.profile_values = {k: config.get(k, "") for k in
                                        ("profile_snapshot_id", "profile_sha256")}
+            rejected = result.observed_state.get("rejected_candidates")
+            if (result.error_code == "RETURN_HOME_PATH_UNAVAILABLE"
+                    and isinstance(rejected, list) and rejected):
+                first = rejected[0] if isinstance(rejected[0], Mapping) else {}
+                candidate_id = first.get("candidate_id", "후보 미상")
+                reason = first.get("reason", "거절 사유 미확인")
+                remaining = max(0, len(rejected) - 1)
+                suffix = f" · 외 {remaining}개 후보" if remaining else ""
+                self.emit_event(
+                    "DIAGNOSTIC", code="RETURN_HOME_CANDIDATE_DIAGNOSTIC",
+                    message=f"HOME 복귀 후보 거절: {candidate_id} · {reason}{suffix}",
+                    severity="WARNING")
             diagnostic = result.observed_state.get("ik_candidate_diagnostic")
             if isinstance(diagnostic, Mapping):
                 status = diagnostic.get("status", "UNKNOWN")
