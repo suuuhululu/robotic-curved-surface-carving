@@ -182,6 +182,9 @@ def test_deployed_profile_measurement_assembly_passes_path_consumer(tmp_path):
     validate_profile(profile)
     assert profile['surface']['radius_mm'] == raw['radius_m'] * 1000
     assert profile['workcell_version'] == 1
+    assert profile['surface']['reachable_angle_deg'] == [-180., 180.]
+    assert profile['joint_check_arguments']['limits_deg'][5] == [-345., 345.]
+    assert profile['joint_check_arguments']['j6_margin_deg'] == 0.
 
 
 @pytest.mark.parametrize('bad', [

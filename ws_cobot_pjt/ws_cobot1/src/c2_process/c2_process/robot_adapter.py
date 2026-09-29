@@ -171,6 +171,10 @@ class RobotAdapter:
         """도구 끝 pose(m·quat) → 관절 [deg] 6개. 해가 없으면 None. ref_joints_deg 로 해 공간을 고른다 (연속성). 로봇을 움직이지 않는다."""
         raise NotImplementedError
 
+    def inverse_kinematics_candidates(self, pose, tool_offset_m, ref_joints_deg, cancel=None):
+        """최대 8개 solution space의 IK 조회 진단. 실행용 solution space를 변경하지 않는다."""
+        raise NotImplementedError
+
     def reset_ik_metrics(self):
         """선택 계측 API. 구현하지 않는 어댑터는 고수준 검사 계측만 사용한다."""
 
@@ -397,11 +401,90 @@ class DoosanRobotAdapter(RobotAdapter):
         self._ik_space = best[1]
         return best[2]
 
+    def inverse_kinematics_candidates(self, pose, tool_offset_m, ref_joints_deg, cancel=None):
+        """8개 space를 모두 조회한다.
+
+        정상적인 `success=false`는 NO_SOLUTION, 서비스 예외·응답 형식 오류는
+        SERVICE_ERROR로 분리한다. 이 진단은 `_ik_space`를 읽거나 바꾸지 않는다.
+        """
+        if not hasattr(self, "_ik_metrics_lock"):
+            self.reset_ik_metrics()
+        with self._ik_metrics_lock:
+            self._ik_candidate_queries += 1
+        if (not isinstance(ref_joints_deg, (list, tuple)) or len(ref_joints_deg) != 6
+                or any(type(v) not in (int, float) or not math.isfinite(v)
+                       for v in ref_joints_deg)):
+            return dict(status="INVALID_INPUT", queried_spaces=0, candidates=[], spaces=[],
+                        service_error_spaces=[], no_solution_spaces=[])
+        px = pose_to_posx(pose, tool_offset_m)
+        spaces = []
+        candidates = []
+        for sp in range(8):
+            if cancel is not None and cancel.is_set():
+                return dict(status="CANCELED", queried_spaces=sp,
+                            candidates=candidates, spaces=spaces,
+                            service_error_spaces=[item["solution_space"] for item in spaces
+                                                  if item["status"] == "SERVICE_ERROR"],
+                            no_solution_spaces=[item["solution_space"] for item in spaces
+                                                if item["status"] == "NO_SOLUTION"])
+            service_started = time.monotonic()
+            try:
+                kind = self._srv["Ikin"]
+                response = self._call(
+                    "motion/ikin", kind,
+                    kind.Request(pos=[float(v) for v in px], sol_space=sp, ref=0),
+                    timeout=5.0)
+                if getattr(response, "success", None) is not True:
+                    spaces.append(dict(solution_space=sp, status="NO_SOLUTION"))
+                    continue
+                q = getattr(response, "conv_posj", None)
+                if isinstance(q, tuple) and len(q) and hasattr(q[0], "__len__"):
+                    q = q[0]
+                try:
+                    values = list(q)[:6]
+                except (TypeError, ValueError):
+                    values = []
+                if (len(values) < 6
+                        or any(type(v) not in (int, float) or not math.isfinite(v)
+                               for v in values)):
+                    spaces.append(dict(solution_space=sp, status="SERVICE_ERROR",
+                                       error_type="INVALID_RESPONSE"))
+                    continue
+                joints = [float(v) for v in values]
+                delta = [abs(joints[k] - float(ref_joints_deg[k])) for k in range(6)]
+                candidate = dict(solution_space=sp, joints_deg=joints,
+                                 joint_delta_deg=delta,
+                                 max_joint_delta_deg=max(delta),
+                                 total_joint_delta_deg=sum(delta))
+                candidates.append(candidate)
+                spaces.append(dict(solution_space=sp, status="SUCCEEDED"))
+            except Exception as exc:
+                spaces.append(dict(solution_space=sp, status="SERVICE_ERROR",
+                                   error_type=type(exc).__name__))
+            finally:
+                elapsed = max(0.0, time.monotonic() - service_started)
+                with self._ik_metrics_lock:
+                    self._ik_service_calls += 1
+                    self._ik_service_elapsed_s += elapsed
+                    self._ik_service_max_s = max(self._ik_service_max_s, elapsed)
+        service_errors = [item["solution_space"] for item in spaces
+                          if item["status"] == "SERVICE_ERROR"]
+        no_solutions = [item["solution_space"] for item in spaces
+                        if item["status"] == "NO_SOLUTION"]
+        if candidates:
+            status = "PARTIAL" if service_errors else "SUCCEEDED"
+        else:
+            status = "SERVICE_ERROR" if service_errors else "NO_SOLUTION"
+        return dict(status=status, queried_spaces=8, candidates=candidates, spaces=spaces,
+                    service_error_spaces=service_errors,
+                    no_solution_spaces=no_solutions)
+
     def reset_ik_metrics(self):
         if not hasattr(self, "_ik_metrics_lock"):
             self._ik_metrics_lock = threading.Lock()
         with self._ik_metrics_lock:
             self._ik_inverse_calls = 0
+            self._ik_candidate_queries = 0
             self._ik_service_calls = 0
             self._ik_service_elapsed_s = 0.0
             self._ik_service_max_s = 0.0
@@ -411,12 +494,13 @@ class DoosanRobotAdapter(RobotAdapter):
             self.reset_ik_metrics()
         with self._ik_metrics_lock:
             service_calls = self._ik_service_calls
+            high_level_calls = self._ik_inverse_calls + self._ik_candidate_queries
             return {
                 "inverse_kinematics_calls": self._ik_inverse_calls,
+                "candidate_query_calls": self._ik_candidate_queries,
                 "motion_ikin_calls": service_calls,
                 "solution_space_queries_per_ik": (
-                    service_calls / self._ik_inverse_calls
-                    if self._ik_inverse_calls else 0.0),
+                    service_calls / high_level_calls if high_level_calls else 0.0),
                 "motion_ikin_elapsed_s": self._ik_service_elapsed_s,
                 "motion_ikin_mean_response_s": (
                     self._ik_service_elapsed_s / service_calls if service_calls else 0.0),
@@ -1140,6 +1224,27 @@ class MockRobotAdapter(RobotAdapter):
         j6 = math.degrees(math.atan2(ty[1], ty[0])) + getattr(self, "ik_j6_offset", 0.0)
         q = list(ref_joints_deg); q[5] = j6
         return q
+
+    def inverse_kinematics_candidates(self, pose, tool_offset_m, ref_joints_deg, cancel=None):
+        """모의 진단은 현재 연속해 하나를 space 0 후보로 제공한다."""
+        if cancel is not None and cancel.is_set():
+            return dict(status="CANCELED", queried_spaces=0, candidates=[], spaces=[],
+                        service_error_spaces=[], no_solution_spaces=[])
+        q = self.inverse_kinematics(pose, tool_offset_m, ref_joints_deg)
+        if q is None:
+            return dict(status="NO_SOLUTION", queried_spaces=8, candidates=[],
+                        spaces=[dict(solution_space=sp, status="NO_SOLUTION") for sp in range(8)],
+                        service_error_spaces=[], no_solution_spaces=list(range(8)))
+        delta = [abs(q[k] - ref_joints_deg[k]) for k in range(6)]
+        return dict(status="SUCCEEDED", queried_spaces=8,
+                    candidates=[dict(solution_space=0, joints_deg=list(q),
+                                     joint_delta_deg=delta,
+                                     max_joint_delta_deg=max(delta),
+                                     total_joint_delta_deg=sum(delta))],
+                    spaces=[dict(solution_space=sp,
+                                 status="SUCCEEDED" if sp == 0 else "NO_SOLUTION")
+                            for sp in range(8)],
+                    service_error_spaces=[], no_solution_spaces=list(range(1, 8)))
 
     def set_tool_offset(self, offset_tool_m):
         self.tool_offset_m = list(offset_tool_m) if offset_tool_m else None

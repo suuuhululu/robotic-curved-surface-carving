@@ -25,7 +25,7 @@
     "valid_v_range_mm": [10.0, 140.0],
     "u_origin_angle_deg": 0.0,
     "seam_angle_deg": 180.0,
-    "reachable_angle_deg": [-135.0, 135.0],
+    "reachable_angle_deg": [-180.0, 180.0],
     "height_reference": "bottom",
     "v_direction": "up"
   },
@@ -104,7 +104,7 @@
       [-135.0, 135.0],
       [-360.0, 360.0],
       [-135.0, 135.0],
-      [-170.0, 170.0]
+      [-345.0, 345.0]
     ],
     "j6_margin_deg": 0.0
   },

@@ -1202,7 +1202,19 @@ def test_ros_callbacks_publish_cached_signals_and_alarm_events(monkeypatch):
     node.report_precheck(node.goal_values, config, StepResult('FAILED', 'PROFILE_MISMATCH'))
     node.report_precheck(node.goal_values, config, StepResult('FAILED', 'PROFILE_MISMATCH'))
     node.report_precheck(node.goal_values, config, StepResult('SUCCEEDED'))
-    assert [e.event_type for e in node.event_pub.sent] == ['ALARM_RAISED', 'ALARM_CLEARED']
+    diagnostic = StepResult('SUCCEEDED', observed_state={'ik_candidate_diagnostic': {
+        'status': 'SUCCEEDED', 'selected_solution_spaces': [2],
+        'j6_min_deg': -12., 'j6_max_deg': 174., 'minimum_j6_remaining_deg': 171.,
+        'failure_waypoint': None}})
+    node.report_candidate_diagnostic_start(node.goal_values, config, {
+        'segment_id': 'seg-1', 'window_start_index': 4, 'window_end_index': 14})
+    node.report_precheck(node.goal_values, config, diagnostic)
+    assert [e.event_type for e in node.event_pub.sent] == [
+        'ALARM_RAISED', 'ALARM_CLEARED', 'DIAGNOSTIC', 'DIAGNOSTIC']
+    assert node.event_pub.sent[-2].code == 'IK_CANDIDATE_DIAGNOSTIC_STARTED'
+    assert node.event_pub.sent[-1].code == 'IK_CANDIDATE_DIAGNOSTIC'
+    assert 'space 2' in node.event_pub.sent[-1].message
+    assert 'Cartesian 동일성 미검증' in node.event_pub.sent[-1].message
     assert all(e.profile_snapshot_id == 's' and e.profile_sha256 == 'sh' for e in node.event_pub.sent)
 
     made = []

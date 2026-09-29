@@ -200,6 +200,66 @@ def test_ikin_metrics_separate_high_level_and_motion_service_calls(setup):
     assert metrics['motion_ikin_max_response_s'] == pytest.approx(0.02)
 
 
+def test_ikin_candidates_queries_all_eight_spaces_and_reports_motion(setup):
+    ad, clock, calls = setup
+
+    def call(endpoint, kind, request, timeout=5.):
+        calls.append((endpoint, request))
+        return SimpleNamespace(success=True, conv_posj=[float(request.sol_space)] * 6)
+
+    ad._call = call
+    report = ad.inverse_kinematics_candidates(
+        posx_to_pose([100., 0., 0., 0., 0., 0.]), None, [1.] * 6)
+
+    assert report['status'] == 'SUCCEEDED'
+    assert [item['solution_space'] for item in report['candidates']] == list(range(8))
+    assert [request.sol_space for endpoint, request in calls
+            if endpoint == 'motion/ikin'] == list(range(8))
+    assert report['candidates'][0]['joint_delta_deg'] == [1.] * 6
+    assert report['candidates'][7]['max_joint_delta_deg'] == 6.
+    assert report['candidates'][7]['total_joint_delta_deg'] == 36.
+    assert not hasattr(ad, '_ik_space')
+
+
+def test_ikin_candidates_distinguishes_no_solution_and_service_error(setup):
+    ad, clock, calls = setup
+
+    def call(endpoint, kind, request, timeout=5.):
+        calls.append((endpoint, request))
+        if request.sol_space == 0:
+            raise ConnectionError('controller unavailable')
+        return SimpleNamespace(success=False, conv_posj=[])
+
+    ad._call = call
+    report = ad.inverse_kinematics_candidates(
+        posx_to_pose([100., 0., 0., 0., 0., 0.]), None, [0.] * 6)
+
+    assert report['status'] == 'SERVICE_ERROR'
+    assert report['service_error_spaces'] == [0]
+    assert report['no_solution_spaces'] == list(range(1, 8))
+    assert report['candidates'] == []
+    assert len(calls) == 8
+
+
+def test_ikin_candidates_marks_partial_results(setup):
+    ad, clock, calls = setup
+
+    def call(endpoint, kind, request, timeout=5.):
+        calls.append((endpoint, request))
+        if request.sol_space == 3:
+            raise TimeoutError('timeout')
+        return SimpleNamespace(success=request.sol_space == 5,
+                               conv_posj=[5.] * 6 if request.sol_space == 5 else [])
+
+    ad._call = call
+    report = ad.inverse_kinematics_candidates(
+        posx_to_pose([100., 0., 0., 0., 0., 0.]), None, [0.] * 6)
+
+    assert report['status'] == 'PARTIAL'
+    assert report['service_error_spaces'] == [3]
+    assert [item['solution_space'] for item in report['candidates']] == [5]
+
+
 def test_empty_motion_spline_rejected(setup):
     ad, clock, calls = setup
     r = ad.move_spline([posx_to_pose(ZERO)] * 3, 'c2_base', PROFILE, 2., None)

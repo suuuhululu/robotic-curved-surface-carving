@@ -398,8 +398,8 @@ small {
   display: grid;
   grid-template-columns: 318px minmax(470px, 1fr) 366px;
   gap: 18px;
-  min-height: 730px;
-  height: calc(100vh - 305px);
+  min-height: max(730px, calc(100vh - 305px));
+  height: auto;
 }
 .input-panel {
   padding: 21px;
@@ -891,6 +891,15 @@ small {
   color: #a45c35 !important;
   font-size: 11px;
   line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.ik-candidate-diagnostic {
+  margin-top: 7px;
+  padding: 7px 9px;
+  border-left: 2px solid #c99a45;
+  background: #fff9ed;
+  color: #876932 !important;
+  font-size: 10px !important;
   overflow-wrap: anywhere;
 }
 .blocker-list {
