@@ -1,6 +1,6 @@
 # 새김 메인 프로젝트
 
-> 기준: 2026-09-23 원격 `main` `6536a29`. 이 페이지는 현재 코드의 진입점이다. 날짜가 붙은 설계·검증 문서는 작성 당시의 기록으로 읽는다.
+> 기준: 2026-09-30 PR #99 head `3d882f6` (`origin/main` `d17a2f6` + `main_v11` 통합). 이 페이지는 현재 코드의 진입점이다. 날짜가 붙은 설계·검증 문서는 작성 당시의 기록으로 읽는다.
 
 두산 M0609와 2점 그리퍼에 철사로 고정한 드릴을 사용하는 양초 원통 조각 시스템이다. 현재 공정에는 그리퍼 열기, 자동 집기·반납, 스펀지 청소가 없다. ROS 2 기준은 Jazzy이며, 현장 장비·설정과 실기 결과는 코드와 별도로 확인해야 한다.
 
@@ -29,7 +29,7 @@ REAL 측정의 원통 중심·반지름은 접촉 추정이며 높이는 운영�
 [문서 길잡이](docs/README.md)에서 현재 구현 안내와 날짜별 근거를 구분한다.
 
 - [시스템 구조](docs/SYSTEM_STRUCTURE.md) · [호출 흐름](docs/INTERFACE_GUIDE.md) · [인터페이스 계약](docs/INTERFACE_RECOMMENDATION.md)
-- [ROS 실행·설정](ws_cobot1/doc/README.md) · [전체 진행 현황](../docs/REVIEW_STATUS.md)
+- [ROS 실행·설정](ws_cobot1/doc/README.md) · [전체 진행 현황](../docs/REVIEW_STATUS.md) · [main_v11 점검](../docs/MAIN_V11_AUDIT.md) · [로컬 환경](../docs/LOCAL_ENVIRONMENT.md)
 - [9/21 개발 일지](docs/daily/2026-09-21.md) · [9/22 개발 일지](docs/daily/2026-09-22.md)
 - `docs/daily/`, `docs/validation/`, `docs/evidence/`는 각 날짜·커밋의 근거이며 최신 실행 지침의 우선 출처가 아니다.
 

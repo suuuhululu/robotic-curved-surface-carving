@@ -1,6 +1,6 @@
 # 새김 시스템 구조와 코드 책임
 
-기준: `main` `987a3b7` (2026-09-25, PR #90 병합). 현재 코드의 구조를 설명한다. 장치·실기 검증의 범위는 [인터페이스 안내](INTERFACE_GUIDE.md), [Interface Specification](INTERFACE_SPECIFICATION.md)과 관련 시험 기록을 따른다.
+기준: PR #99 head `3d882f6` (2026-09-30, `main_v11` 통합). 현재 코드의 구조를 설명한다. 장치·실기 검증의 범위는 [인터페이스 안내](INTERFACE_GUIDE.md), [Interface Specification](INTERFACE_SPECIFICATION.md)과 관련 시험 기록을 따른다.
 
 ```text
 운영자 React HMI

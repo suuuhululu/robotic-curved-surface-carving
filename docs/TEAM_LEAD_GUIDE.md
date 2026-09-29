@@ -4,7 +4,7 @@
 
 ## 현재 우선할 일 · 2026-09-23
 
-- 확인한 원격 `main`은 `987a3b7`이다. 공통 타입, HMI/서버, 경로 Action, 공정 ROS 노드와 REAL 준비·실행 후보, entry 및 검사된 HOME 복귀 코드가 있다. [진행 현황](REVIEW_STATUS.md), [시스템 구조](../ws_cobot_pjt/docs/SYSTEM_STRUCTURE.md), 날짜별 일지의 검증 경계를 확인하고 작업을 나눈다.
+- 2026-09-30 통합 기준은 PR #99 head `3d882f6`이며 원격 `main` `d17a2f6`과 병합 전에는 구분한다. 공통 타입, HMI/서버, 경로 Action, 공정 ROS 노드와 REAL 준비·실행 후보, entry 및 검사된 HOME 복귀 코드가 있다. [진행 현황](REVIEW_STATUS.md), [시스템 구조](../ws_cobot_pjt/docs/SYSTEM_STRUCTURE.md), 날짜별 일지의 검증 경계를 확인하고 작업을 나눈다.
 - 현재 REAL 또는 승인된 entry 활성 순서는 **준비 MEASURE → 측정 원본 저장·스냅샷 BIND → 3D 경로 생성·미리보기 → 운영자 별도 ExecuteProcess 요청 → PRECHECK → ENTRY → ENGRAVE → RETURN_HOME → FINISH**다. entry 비활성 호환 흐름과 구분하고, 정상 성공 경로의 검사된 복귀와 실패·정지 미확인 뒤 자동 복귀 금지를 구분한다. 계획을 새 기능으로 다시 발주하지 말고 설치 PC의 실제 빌드·설정·현장 시험을 독립 과제로 관리한다.
 - 이시율의 측정·모션, 김세은의 공정 순서·최종 검사, 노홍동의 경로, 이수현의 HMI/서버가 같은 커밋의 공통 타입과 자산 ID·해시를 쓰는지 검토한다. 변경이 필요하면 송수신자와 시험을 한 PR 범위로 맞춘다.
 - SIMULATION/test_only 부분 통합, 모의 시험, 두산 가상 제어기, 실제 M0609 시험을 상태표에서 분리한다. CI·코드 병합을 REAL 실행 승인이나 실물 품질 합격으로 처리하지 않는다.

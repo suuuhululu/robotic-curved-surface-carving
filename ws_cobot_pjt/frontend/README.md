@@ -1,88 +1,82 @@
 # 새김 · 운영자 HMI
 
-최신 REAL 준비 연결: [한 PC 실행 안내](../docs/HMI_REAL_PREPARATION.md). REAL 경고·측정 결과 수신·ESTIMATED 미승인 표시를 추가했다. REAL 경로 생성·조각은 여전히 차단한다.
+> 기준: 2026-09-30 PR #99 head `3d882f6`. React 19·TypeScript·Vite 기반의
+> 로컬 작업자 관제 화면이다. 이전 `HMI_*_202609*.md`는 당시 개발 기록이며 현재
+> 모드·계약은 이 문서와 [백엔드](../backend/README.md)를 따른다.
 
-최신: [main 8a68790 통합 준비](../docs/HMI_INTEGRATION_20260921.md). ROS SIM 준비·등록 표시를 연결하고 완료 개수와 최종 접촉 원본을 구분했다. REAL/조각 실행은 활성화하지 않는다.
+## 설치와 실행
 
-2026-09-21 후속: [HMI 선행 수정](../docs/HMI_PREWORK_20260921.md). 준비 수동 체크 3개를 제거하고 실행 직전 드릴 ON 화면 확인, 상시 관측 품질·시각 표시를 추가했다.
-MOCK에서 준비 요청 → 홈·재검사 표시 → 8점 측정 → 경로 생성 순서로 사용한다.
-ROS 준비 타입·서버는 main에 있으나 HMI의 설정·원본 저장·BIND·동적 profile 통합 검증 전까지 준비 버튼은 비활성이다.
-
-2026-09-21: [상하 10mm 작업 영역 기준](../docs/HMI_WORK_AREA.md)을 반영했다.
-전개면의 옅은 음영은 상하 조각 제외 구간이며, 바닥 기준 V와 윗면 기준 v를 함께 표시한다.
-합의 기준과 현재 ROS 프로파일(85~130mm)이 다르면 반영 대기를 표시한다. 좌표 노드의 제한을 변경한 것은 아니다.
-
-2026-09-21: [경로 생성 취소·새로고침 복원](../docs/HMI_GENERATION_CANCEL.md)을 지원한다. 기존 GeneratePath v2의 표준 취소를 사용하며 공통 ROS 타입 변경은 없다.
-
-1920×1080 모니터·마우스·키보드용 **React 19 + TypeScript + Vite** 화면이다. 고객용 웹앱은 현재 진입점에서 사용하지 않는다. 브라우저에서 실행하지만 역할은 작업자 관제 HMI다.
-
-## 실행
-
-Node.js 22 이상, pnpm 11을 준비한다.
+현재 PC에서는 Node 18.19.1, pnpm 11.25.0과 저장된 lockfile로 build를 확인했다.
+`--experimental-strip-types`를 쓰는 preview 시험까지 실행할 환경은 Node 22 이상을
+사용한다. 의존성 버전은 `package.json`과 `pnpm-lock.yaml`을 함께 따른다.
 
 ```bash
 cd ws_cobot_pjt/frontend
 pnpm install --frozen-lockfile
 ```
 
-저장소 루트에서 `python3 ws_cobot_pjt/run_monitor.py`를 실행하고 http://127.0.0.1:5174/operator 를 연다. 기본은 MOCK이다.
-실제 이미지 경로 노드는 `--transport ros`로 연결한다. 서버 설치는 [서버 README](../backend/README.md), ROS 환경은
-[한 PC 통합 안내](../docs/HMI_PATH_INTEGRATION.md)를 따른다. 두 모드 모두 로컬 SIMULATION 환경이다.
+저장소 루트에서 다음을 실행한다.
 
-화면만 개발할 때 `pnpm dev`를 사용한다. Vite 5174의 `/api/operator` HTTP·WebSocket 요청을 8010으로 전달한다. 실제 로봇 브링업은 수행하지 않는다.
+```bash
+python3 ws_cobot_pjt/run_monitor.py
+```
+
+화면은 `http://127.0.0.1:5174/operator`, API는 `http://127.0.0.1:8010`이다.
+기본은 SIMULATION/MOCK이다. ROS SIM과 REAL 옵션은
+[로컬 실행환경](../../docs/LOCAL_ENVIRONMENT.md)을 따른다.
+
+화면만 개발할 때는 `pnpm dev`를 사용한다. Vite 5174의 `/api/operator` 요청을
+8010으로 전달한다. `pnpm preview`에는 이 API 프록시가 없으므로 전체 흐름 시험에
+사용하지 않는다.
 
 ```bash
 pnpm build
 pnpm exec prettier --check 'src/monitor/*.{ts,tsx,css}' src/main.tsx vite.config.ts
+node --experimental-strip-types --test tests/preview.test.mjs
 ```
 
-빌드 뒤 서버를 실행하면 http://127.0.0.1:8010/operator 에서 정적 화면과 API를 함께 제공한다. `pnpm preview`에는 API 프록시가 없으므로 전체 기능 확인은 위 주소를 사용한다.
+2026-09-30 확인에서 build와 Node 24 preview 시험 5건은 통과했다. Prettier 검사는
+기존 `src/monitor/Monitor.tsx` 불일치 1건이 남아 있으며 기능 시험 통과와 구분한다.
 
-## 사용 순서
+## 현재 작업 순서
 
-2026-09-21: 전개면은 원통 옆면 전체(둘레 360°, V=0~height_mm)를 배치 영역으로
-표시한다. 기존 시험 프로파일의 높이·도달각 제한을 배치 금지 음영으로 표시하지 않는다.
-로봇 실행 가능성 검사는 공정 제어의 책임이며 화면 배치와 구분한다.
-이번 변경은 HMI 표시만 수정한다. GeneratePath v2, 프로파일 원문과 생성 경로는 변경하지 않는다.
-현재 c2_path의 고정 시험 범위 검사는 그대로여서 전체면 배치가 생성 단계에서 거절될 수 있다.
-전체면 변환을 완료하려면 c2_path의 매핑·검증·이음매 처리도 별도로 변경해야 한다.
-서버의 8010 정적 화면을 사용할 때는 `pnpm build` 후 브라우저를 강력 새로고침한다.
+1. 준비 설정과 현장 확인을 검토하고 MEASURE를 요청한다.
+2. 서버가 접촉 9점 원본을 저장하고 유효한 실행 설정이 있으면 BIND한다.
+3. PNG/JPEG와 배치값으로 경로를 생성하고 전개면·원기둥 미리보기를 확인한다.
+4. 같은 경로·스냅샷·해시와 공작물 고정을 확인한 뒤 별도 ExecuteProcess를 요청한다.
+5. `PRECHECK → ENTRY → ENGRAVE → RETURN_HOME → FINISH` 진행과 정지 결과를 확인한다.
+6. 실행 이력에서 결과와 사후 검사를 기록한다.
 
-**파일 통합 시험**에서는 SIM 스냅샷 등록·선택 → 입력 ZIP 전달 → 결과 ZIP 가져오기 →
-전개면/원기둥 미리보기 → 공정팀 전달 ZIP을 사용할 수 있다.
-파일 교환용 선택은 아래 ROS/MOCK 기본 생성 설정과 별도이며, 공통 공정 필드의 승인으로 취급하지 않는다.
-[파일 형식·담당별 후속 작업](../docs/HMI_FILE_INTEGRATION.md)을 확인한다.
+entry 비활성 호환 흐름에서는 `ENTRY`와 `RETURN_HOME`이 생략될 수 있다. 화면의
+드릴 ON 체크는 운영자의 수동 전원 절차 확인이며 센서값이나 드릴 제어 명령이 아니다.
 
-1. 측정 전 드릴 수동 OFF 안내를 읽고, MOCK에서 **사전 검사·양초 측정 요청**. 최종 준비 완료 뒤 PNG/JPEG 첨부 또는 ‘샘플로 둘러보기’. ROS 경로 시험에서는 준비 연결 대기 상태로 이미지부터 시험한다.
-2. 가로·세로·중심 U/V·회전 입력. 전개면에서 마우스로 위치를 바꿀 수도 있다.
-3. **경로 생성**. 전개면과 원기둥의 동일 경로를 확인한다. 원기둥 드래그는 관찰 방향만 바꾼다.
-4. 경로·공작물 고정 확인과 **드릴 수동 ON(화면 확인 전용)**을 체크한 뒤 **시작 요청**. 모의 공정의 단계·진행률·이벤트를 확인한다. MOCK 화면 시험 때문에 실제 드릴을 켜지 않는다.
-5. 공정 관제에서 MOCK 구간별 예정(검정)·진행(황색)·확인(초록)·실패(빨강)·미확인(회색 점선)을 확인한다. 현재 품질 판정은 모의 데이터다. ROS/REAL에서 별도 구간 판정이 없으면 공정 노드의 완료 CUT 길이 비율을 미완료(검정)·진행(황색)·이동 완료(파랑)·진행 미확인(회색 점선)으로 표시한다. 파랑은 품질 합격을 뜻하지 않는다. 상단 **정지 요청**은 준비·측정 Action 또는 실행 Action이 진행 중일 때 활성화되며, 접수와 실제 정지 확인을 구분해 표시한다.
-6. **실행 이력 → 상세·검사**에서 판정과 근거를 저장한다.
-7. **설정 정보**에서 실패·통신 단절 시나리오를 선택한다. ‘모의 상태 초기화’는 가짜 현재 상태만 초기화하고 기록을 보존한다.
+## 표시 의미
 
-위 4~7번의 공정 실행·시나리오 선택은 MOCK 전용이다. MOCK은 첨부 이미지를 보관하고 고정 식물 중심선 샘플을 반환한다.
-ROS 모드는 PR #38의 `raster_centerline_bezier`로 첨부 이미지를 실제 변환하며 `c2-path-preview/1`의
-분리 구간과 profile 원점을 반영한다. 가로·세로는 비율 유지 맞춤 상자이며 편집 중 그림은 참고 표시다.
-초기 24×24 mm/U0/V107.5로 생성해 미리보기를 확인한다. 경로 노드 연결과 공정 상태 수신은 별개로 표시한다.
-현재 ROS 경로는 test_only라 시작을 차단하고 J6_RANGE 미검사를 표시한다. 실패 보고서·SVG는 진단용이며
-실행 경로가 아니다. 입력 변경 시 이전 결과를 구분하고 실행 확인을 해제한다.
+- MOCK은 이미지 계산과 공정 상태를 시험하기 위한 모의 결과다.
+- ROS SIM은 실제 팀 ROS 타입을 사용하지만 로봇 실기 결과가 아니다.
+- REAL 경로의 `real_execution_allowed=true`는 실행 후보 표시다. 공정 PRECHECK,
+  실제 충돌 검사, 가공 품질 합격을 뜻하지 않는다.
+- 구간 색상은 미완료, 진행, 이동 완료, 실패, 진행 미확인을 구분한다. 이동 완료를
+  가공 품질 합격으로 표시하지 않는다.
+- 정지 요청 접수와 실제 정지 확인을 구분한다. `UNKNOWN` 또는
+  `STOP_UNCONFIRMED`이면 현장 상태 확인 전 새 작업을 시작하지 않는다.
 
-좌표 표시·구간 분리 시험(Node 24에서 확인): `node --experimental-strip-types --test tests/preview.test.mjs`.
+REAL 실행 프로파일이 없거나 형식이 틀리면 측정과 test-only 미리보기까지만
+가능하다. BIND·REAL 실행 후보·조각은 차단한다. 준비 상태·제어권·관측 상실로
+BIND가 무효화되면 기존 파일만으로 자동 복구하지 않는다.
+
+진행 중 공정의 pause/resume은 없다. 브라우저 새로고침은 저장된 기록을 다시 읽지만
+공정 노드의 모션을 다음 날 이어서 시작하는 기능이 아니다.
 
 ## 소스
 
-- `src/main.tsx`: 새 모니터 진입점
-- `src/monitor/Monitor.tsx`: 작업 준비·관제·이력·알람·설정
-- `src/monitor/PreparationPanel.tsx`: 준비 요청·취소·8점 진행·측정 결과·기록
-- `src/monitor/FileIntegration.tsx`: SIM 스냅샷·입력/결과 ZIP·등록 결과 미리보기
-- `src/monitor/LivePathPreview.tsx`: 실시간 경로·모의 가공 판정 표시
-- `src/monitor/Previews.tsx`: U/V 전개면과 3D 점의 원기둥 투영
-- `src/monitor/preview.ts`: 실제/모의 preview 선택·원통 표시 좌표 변환(경로 파일 변경 없음)
-- `src/monitor/api.ts`: HTTP 타입·요청·오류 구분
-- `src/monitor/monitor.css`: 목업 기반 녹색·오프화이트 디자인
-- `public/samples/monitor_centerline.png`: 직접 작성한 모의 중심선 샘플
+- `src/main.tsx`: 모니터 진입점
+- `src/monitor/Monitor.tsx`: 준비·관제·이력·알람·설정
+- `src/monitor/PreparationPanel.tsx`: 준비 요청·취소·측정 진행·결과
+- `src/monitor/LivePathPreview.tsx`: 경로와 구간 상태
+- `src/monitor/Previews.tsx`, `preview.ts`: 전개면·원기둥 표시
+- `src/monitor/api.ts`: HTTP 타입·요청·오류
+- `src/monitor/monitor.css`: 1920×1080 작업자 화면 스타일
 
-외부 폰트·도자기 사진·외부 미디어를 불러오지 않는다. 시스템 한글 폰트를 사용한다. 작은 화면에서는 스크롤을 허용하며 모바일 앱으로 설계하지 않았다.
-
-이전 고객 웹앱 초안은 개발 PC에 별도로 보존했다. 이 게시본의 진입점은 `src/monitor/Monitor.tsx`이며 고객용 화면은 포함하지 않는다. [DB·게이트웨이·미확정 계약](../docs/HMI_MONITOR_IMPLEMENTATION.md).
+화면은 로봇 좌표나 모션 순서를 직접 만들지 않는다. 한 운영자용 루프백 개발
+화면이며 외부 공개·다중 사용자 인증은 현재 범위가 아니다.

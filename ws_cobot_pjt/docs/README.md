@@ -1,11 +1,11 @@
 # 문서 길잡이
 
-> 2026-09-25 원격 `main` `987a3b7` 기준. AI와 팀원은 아래 **현재 구현 문서 → 원본 코드·ROS 타입** 순서로 확인한다. 날짜가 붙은 기록·제안서는 작성 당시 커밋의 근거이며 현재 구현을 덮어쓰지 않는다.
+> 2026-09-30 PR #99 head `3d882f6` 기준. AI와 팀원은 아래 **현재 구현 문서 → 원본 코드·ROS 타입** 순서로 확인한다. 날짜가 붙은 기록·제안서는 작성 당시 커밋의 근거이며 현재 구현을 덮어쓰지 않는다.
 
 ## 현재 구현을 볼 때
 
-1. [전체 진행·검증 수준](../../docs/REVIEW_STATUS.md), [프로젝트 README](../README.md)
-2. [시스템 구조](SYSTEM_STRUCTURE.md) — HMI·경로·공정의 코드 위치와 책임
+1. [전체 진행·검증 수준](../../docs/REVIEW_STATUS.md), [main_v11 점검](../../docs/MAIN_V11_AUDIT.md), [로컬 실행환경](../../docs/LOCAL_ENVIRONMENT.md)
+2. [프로젝트 README](../README.md), [시스템 구조](SYSTEM_STRUCTURE.md) — HMI·경로·공정의 코드 위치와 책임
 3. [호출 흐름](INTERFACE_GUIDE.md) — MEASURE/BIND, 경로, 별도 실행·정지
 4. [Interface Specification](INTERFACE_SPECIFICATION.md) — HTTP·WebSocket·ROS 필드, 상태·오류·제한 시간·중복/정지 규칙
 5. [ROS·파일 인터페이스 기준](INTERFACE_RECOMMENDATION.md) — 이름·단위·ID/해시·모드·완료 조건

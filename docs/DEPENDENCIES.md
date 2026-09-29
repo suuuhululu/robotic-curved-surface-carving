@@ -1,8 +1,20 @@
 # 외부 패키지·설치물 기록
 
-2026-09-25 `origin/main` `987a3b7` 기준으로 팀 앱은 React·Vite·FastAPI·SQLite를 사용하고, ROS 2 Jazzy 패키지 `c2_interfaces`·`c2_path`·`c2_process`가 모두 존재한다. `PrepareWorkpiece.action`, 공정 `node.py`·`setup.py`, REAL 준비·실행 진입점과 entry 및 검사된 HOME 복귀 코드도 main에 있다. HMI·경로·공정 코드 연결과 실제 M0609의 전체 가공 검증은 구분한다. [팀 실행 안내](../ws_cobot_pjt/ws_cobot1/doc/README.md), [워크스페이스](WORKSPACES.md), 날짜별 일지와 검증 기록을 참조한다.
+2026-09-30 PR #99 head `3d882f6` 기준으로 팀 앱은 React·Vite·FastAPI·SQLite를 사용하고, ROS 2 Jazzy 패키지 `c2_interfaces`·`c2_path`·`c2_process`가 모두 존재한다. `PrepareWorkpiece.action`, 공정 `node.py`·`setup.py`, REAL 준비·실행 진입점과 entry 및 검사된 HOME 복귀 코드도 통합 기준에 있다. HMI·경로·공정 코드 연결과 실제 M0609의 전체 가공 검증은 구분한다. [팀 실행 안내](../ws_cobot_pjt/ws_cobot1/doc/README.md), [워크스페이스](WORKSPACES.md), 날짜별 일지와 검증 기록을 참조한다.
 
 프런트 잠금 파일은 `frontend/pnpm-lock.yaml`, 백엔드 기본·이미지 포함 잠금 파일은 `backend/requirements.lock.txt`·`backend/requirements-image.lock.txt`다. ROS 연결용 Python 직접 의존성은 `backend/requirements-ros.txt`, 각 ROS 패키지의 의존성은 `package.xml`과 Python 패키지 `setup.py`에 선언한다. `requirements-ros.txt`는 `rclpy`, 생성된 `c2_interfaces`, 외부 `dsr_msgs2`를 pip 패키지로 대체하지 않는다. 공정 launch 디렉터리는 현재 자리표시자만 있으며 설계 문서의 `workcell.yaml`·`tools.yaml`은 존재하지 않는다.
+
+## 2026-09-30 현재 PC 관측
+
+- Ubuntu 24.04 x86_64, ROS 2 Jazzy, Python 3.12.3, Node 18.19.1,
+  pnpm 11.25.0이다.
+- checkout의 `ws_cobot_pjt/ws_dsr/src`에는 C-2가 추적하는 제어권 패치 4개만
+  있고 외부 `.git`과 전체 패키지는 없다. 이 위치의 `colcon list`는 비어 있다.
+- 현재 셸의 `dsr_msgs2`, `dsr_controller2`, `dsr_hardware2`는 checkout 밖의
+  기존 `ws_dsr/install` overlay에서 조회됐다. 정확한 원본 커밋과 로컬 수정,
+  네 패치의 실제 적용 여부는 아직 설치 원장으로 확인해야 한다.
+- `ws_cobot1/src`의 팀 패키지 세 개와 백엔드 `.venv`, 프런트 `node_modules`는
+  존재한다. 재현 순서는 [로컬 실행환경](LOCAL_ENVIRONMENT.md)을 따른다.
 
 이번 문서 갱신은 외부 드라이버·제어기·에뮬레이터를 설치하거나 버전을 변경한 기록이 아니다. 아래 9/16~17 장치 설치 표는 당시 보고이며 팀 전체 고정 버전으로 해석하지 않는다.
 
@@ -10,7 +22,7 @@
 
 | 대상 | 위치 | 확인 상태 |
 | --- | --- | --- |
-| 메인 로봇·그리퍼 환경 | ws_cobot_pjt/ws_dsr/src | 수업 지정 [ahnisinc/cobot_rg2](https://github.com/ahnisinc/cobot_rg2). PR #3에서 기본 Git 제외로 전환했으나 이후 제어권 관측 패치 4개 파일은 명시적으로 추적한다. 이시율 PC의 커밋·수정 여부 보고 확보, 공용 MSI와 팀 공통 고정 버전은 확인 대기 |
+| 메인 로봇·그리퍼 환경 | PC별 외부 `ws_dsr/src` | 수업 지정 [ahnisinc/cobot_rg2](https://github.com/ahnisinc/cobot_rg2). C-2 checkout은 제어권 관측 패치 4개만 추적하며 현재 PC의 전체 설치 원본은 checkout 밖에 있다. 공용 MSI와 팀 공통 고정 버전은 확인 대기 |
 | 공식 두산 참고 소스 | 대상 src 아래 doosan-robot2 | 공식 Jazzy 소스 확인. 강사 수정본과 동일한 것으로 취급하지 않음 |
 | Dart Platform | ws_cobot_pjt/DartPlatform | 교육 자료의 2.12.1 표기. 실제 배포 파일·OS·설치본은 확인 필요 |
 | Backend·Frontend | `ws_cobot_pjt/backend`, `ws_cobot_pjt/frontend` | FastAPI/SQLite와 React/Vite 구현·잠금 파일 존재. MOCK·ROS SIM과 REAL 준비→BIND→경로→별도 실행 요청 코드가 있다. 가상 장치 통합 기록은 있으나 실제 M0609 전체 가공 완료 근거는 아니다. |
@@ -28,7 +40,7 @@
 - 실제 그리퍼 모델·강사 소스 출처를 확인하기 전 다른 드라이버 저장소를 임의로 선택하지 않는다.
 - 외부 원본을 수정해야 하면 수정·배포·버전 고정 방법을 먼저 PR에서 합의한다.
 - Dart 설치 파일·로그 대신 배포 위치·설치 버전·재현 절차를 공유한다.
-- 현재 Mac은 편집·Git 관리와 일부 코드·문서 검증에 사용한다. 외부 두산 드라이버·실제 제어기는 별도의 실행 PC 설치 상태를 확인한다. 다른 PC의 설치·동작 보고를 이 Mac에서 재현했다고 표시하지 않는다.
+- 현재 점검 PC는 Ubuntu 24.04이며 코드·문서·Jazzy 빌드와 로봇 없는 시험에 사용했다. 외부 overlay가 보이더라도 실제 제어기·드라이버 소스의 커밋과 적용 상태는 별도로 확인한다. 다른 PC의 설치·동작 보고를 이 PC에서 재현했다고 표시하지 않는다.
 
 ## 수업 지정 cobot_rg2
 
