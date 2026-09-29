@@ -25,7 +25,8 @@ from .engraving import ExecutionContext, execute_path, validate_path, build_exec
 from .entry_planner import execute_entry_plan, plan_entry_path
 from .return_home_planner import execute_return_home_plan, plan_return_home_path
 from .engraving_workspace import check_path_workspace, validate_workspace
-from .joint_check import check_path_joints, evaluate_path_joints
+from .joint_check import (check_path_joints, diagnose_path_joint_candidates,
+                          evaluate_path_joints)
 from .preconditions import PreconditionEvidence, check_preconditions, check_robot_status, check_prepared_path
 from .robot_adapter import DoosanRobotAdapter, MockRobotAdapter, RobotState, StepResult, apply_tool_offset
 from .state_machine import run_process, run_preparation, run_prepared_process
@@ -1695,6 +1696,29 @@ class ProcessCoordinator:
                         "inverse_kinematics_calls": main_evaluation.inverse_kinematics_calls,
                         "ik_elapsed_s": main_evaluation.elapsed_s,
                     })
+                if self.runtime_mode == "REAL" and main_evaluation is not None:
+                    diagnostic_started = time.monotonic()
+                    try:
+                        candidate_diagnostic = diagnose_path_joint_candidates(
+                            plan, loaded.adapter, list(offset), main_reference,
+                            context.joint_limits_deg, context.j6_margin_deg,
+                            cancel=context.cancel)
+                    except Exception as exc:
+                        # 진단 구현/서비스 실패는 기존 PRECHECK 판정을 바꾸지 않는다.
+                        candidate_diagnostic = {
+                            "mode": "DIAGNOSTIC_ONLY",
+                            "status": "INTERNAL_ERROR",
+                            "reason": type(exc).__name__,
+                            "used_for_execution_approval": False,
+                            "cartesian_solution_space_verified": False,
+                        }
+                    checked.observed_state = dict(checked.observed_state)
+                    checked.observed_state["ik_candidate_diagnostic"] = candidate_diagnostic
+                    stage_metrics["candidate_diagnostic"] = {
+                        "stage_elapsed_s": max(0.0, time.monotonic() - diagnostic_started),
+                        "candidate_query_calls": int(
+                            candidate_diagnostic.get("candidate_query_calls", 0)),
+                    }
                 if checked.ok:
                     if signature != execution_signature(dict(loaded.path), context):
                         return StepResult("FAILED", "PROFILE_MISMATCH", "IK 중 경로/설정 변경", "execution_plan")
@@ -2226,6 +2250,28 @@ def create_ros_node(load_inputs: Callable[[Mapping], ExecutionInputs] = _missing
             with self.lock:
                 self.profile_values = {k: config.get(k, "") for k in
                                        ("profile_snapshot_id", "profile_sha256")}
+            diagnostic = result.observed_state.get("ik_candidate_diagnostic")
+            if isinstance(diagnostic, Mapping):
+                status = diagnostic.get("status", "UNKNOWN")
+                spaces = diagnostic.get("selected_solution_spaces") or []
+                space_text = "→".join(str(value) for value in spaces) if spaces else "선택 없음"
+                if diagnostic.get("selected_solution_spaces_truncated"):
+                    space_text += "→…"
+                if diagnostic.get("failure_waypoint"):
+                    failed = diagnostic["failure_waypoint"]
+                    location = f"실패 {failed.get('segment_id', '—')}:{failed.get('index', '—')}"
+                else:
+                    location = "실패점 없음"
+                if diagnostic.get("j6_min_deg") is not None:
+                    j6 = f"J6 {diagnostic['j6_min_deg']}~{diagnostic['j6_max_deg']}°"
+                    margin = f"최소 잔여 {diagnostic.get('minimum_j6_remaining_deg', '—')}°"
+                else:
+                    j6, margin = "J6 계산 미완료", "최소 잔여 미확인"
+                message = (f"IK 후보 진단 {status}: space {space_text} · {j6} · {margin} · "
+                           f"{location} · 실행 승인 미사용 · Cartesian 동일성 미검증")
+                self.emit_event("DIAGNOSTIC", code="IK_CANDIDATE_DIAGNOSTIC",
+                                message=message,
+                                severity="INFO" if status == "SUCCEEDED" else "WARNING")
             self.report_alarm("PRECHECK", result)
 
         def report_alarm(self, phase, result):

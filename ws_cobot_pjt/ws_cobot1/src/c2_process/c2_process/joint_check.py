@@ -4,6 +4,8 @@
 #   r = check_path_joints(path, adapter, tool_offset_m, ref_joints_rad, limits_deg=None, j6_margin_deg=10)
 #   r.ok → 통과. 실패: FAILED/VALIDATION_FAILED (한계 초과·J6 여유 부족) 또는 FAILED/NOT_READY (IK 불가·어댑터 없음).
 #   observed_state: joints_min_deg, joints_max_deg, j6_start/end/min/max, j6_total_rotation_deg, checked_waypoints, worst(segment_id, joint, value)
+import hashlib
+import json
 import math
 import time
 from dataclasses import dataclass, field
@@ -157,3 +159,161 @@ def check_path_joints(path: Dict, adapter: RobotAdapter,
     return evaluate_path_joints(
         path, adapter, tool_offset_m, ref_joints_rad,
         limits_deg=limits_deg, j6_margin_deg=j6_margin_deg, cancel=cancel).result
+
+
+def diagnose_path_joint_candidates(path: Dict, adapter: RobotAdapter,
+                                    tool_offset_m: Optional[List[float]],
+                                    ref_joints_rad: List[float], limits_deg: List,
+                                    j6_margin_deg: float = 0.0, cancel=None) -> Dict:
+    """전체 명시 waypoint의 다중 IK 후보열을 계산하는 읽기 전용 진단.
+
+    선택 결과는 Cartesian 실행 승인에 사용하지 않는다. 각 waypoint의 유효 후보를
+    연결해 solution-space 전환 수, 관절 이동량, J6 잔여 여유 순으로 비교한다.
+    """
+    started = time.monotonic()
+    base = dict(mode="DIAGNOSTIC_ONLY", used_for_execution_approval=False,
+                cartesian_solution_space_verified=False, queried_waypoints=0,
+                candidate_query_calls=0, service_error_waypoints=0,
+                incomplete_query=False)
+    query = getattr(adapter, "inverse_kinematics_candidates", None)
+    if not callable(query):
+        return dict(base, status="UNAVAILABLE", reason="CANDIDATE_API_UNAVAILABLE",
+                    elapsed_s=max(0.0, time.monotonic() - started))
+    if (not _finite_joints(ref_joints_rad) or not isinstance(limits_deg, (list, tuple))
+            or len(limits_deg) != 6
+            or any(not isinstance(pair, (list, tuple)) or len(pair) != 2
+                   or any(type(v) not in (int, float) or not math.isfinite(v) for v in pair)
+                   or pair[0] >= pair[1] for pair in limits_deg)
+            or type(j6_margin_deg) not in (int, float)
+            or not math.isfinite(j6_margin_deg) or j6_margin_deg < 0):
+        return dict(base, status="INVALID_INPUT", reason="INVALID_LIMIT_OR_REFERENCE",
+                    elapsed_s=max(0.0, time.monotonic() - started))
+    ref = [math.degrees(v) for v in ref_joints_rad]
+    # score: space 전환 최소 → 전체 관절 이동 최소 → J6 최소 여유 최대.
+    states = [dict(q=ref, space=None, switches=0, total_motion=0.0,
+                   max_step=0.0, min_j6_margin=float("inf"), j6_min=ref[5],
+                   j6_max=ref[5], runs=[], hasher=hashlib.sha256())]
+    checked = 0
+    service_error_waypoints = 0
+    segments = path.get("segments") if isinstance(path, dict) else None
+    if not isinstance(segments, list) or not segments:
+        return dict(base, status="INVALID_INPUT", reason="EMPTY_PATH",
+                    elapsed_s=max(0.0, time.monotonic() - started))
+    for segment in segments:
+        waypoints = segment.get("waypoints") or []
+        if not waypoints:
+            return dict(base, status="INVALID_INPUT", reason="EMPTY_SEGMENT",
+                        failure_waypoint=dict(segment_id=segment.get("segment_id"), index=0),
+                        elapsed_s=max(0.0, time.monotonic() - started))
+        for index, waypoint in enumerate(waypoints):
+            if cancel is not None and cancel.is_set():
+                return dict(base, status="CANCELED", reason="CANCEL_REQUESTED",
+                            queried_waypoints=checked, candidate_query_calls=checked,
+                            service_error_waypoints=service_error_waypoints,
+                            elapsed_s=max(0.0, time.monotonic() - started))
+            reference = min(states, key=lambda state: (
+                state["switches"], state["total_motion"], -state["min_j6_margin"]))["q"]
+            report = query(waypoint, tool_offset_m, reference, cancel=cancel)
+            checked += 1
+            if not isinstance(report, dict):
+                report = dict(status="SERVICE_ERROR", candidates=[],
+                              service_error_spaces=list(range(8)))
+            query_status = report.get("status", "SERVICE_ERROR")
+            if query_status == "CANCELED":
+                return dict(base, status="CANCELED", reason="CANCEL_REQUESTED",
+                            queried_waypoints=checked, candidate_query_calls=checked,
+                            service_error_waypoints=service_error_waypoints,
+                            elapsed_s=max(0.0, time.monotonic() - started))
+            if query_status in {"SERVICE_ERROR", "PARTIAL"}:
+                service_error_waypoints += 1
+            candidates = report.get("candidates")
+            if not isinstance(candidates, list):
+                candidates = []
+            next_states = {}
+            rejected = 0
+            for candidate in candidates:
+                q_raw = candidate.get("joints_deg") if isinstance(candidate, dict) else None
+                space = candidate.get("solution_space") if isinstance(candidate, dict) else None
+                if not _finite_joints(q_raw) or type(space) is not int or not 0 <= space < 8:
+                    rejected += 1
+                    continue
+                for previous in states:
+                    q = list(q_raw)
+                    try:
+                        q[5] = _unwrap(previous["q"][5], q[5])
+                    except ValueError:
+                        rejected += 1
+                        continue
+                    valid = True
+                    for joint, (lo, hi) in enumerate(limits_deg):
+                        margin = j6_margin_deg if joint == 5 else 0.0
+                        if q[joint] < lo + margin or q[joint] > hi - margin:
+                            valid = False
+                            break
+                    if not valid:
+                        rejected += 1
+                        continue
+                    delta = [abs(q[j] - previous["q"][j]) for j in range(6)]
+                    remaining = min(q[5] - limits_deg[5][0] - j6_margin_deg,
+                                    limits_deg[5][1] - j6_margin_deg - q[5])
+                    switched = previous["space"] is not None and previous["space"] != space
+                    runs = list(previous["runs"])
+                    if not runs or runs[-1] != space:
+                        runs.append(space)
+                    digest = previous["hasher"].copy()
+                    digest.update(json.dumps(
+                        [segment.get("segment_id"), index, space,
+                         [round(v, 8) for v in q]], separators=(",", ":"),
+                        ensure_ascii=True).encode())
+                    state = dict(q=q, space=space,
+                                 switches=previous["switches"] + int(switched),
+                                 total_motion=previous["total_motion"] + sum(delta),
+                                 max_step=max(previous["max_step"], max(delta)),
+                                 min_j6_margin=min(previous["min_j6_margin"], remaining),
+                                 j6_min=min(previous["j6_min"], q[5]),
+                                 j6_max=max(previous["j6_max"], q[5]),
+                                 runs=runs, hasher=digest)
+                    key = (space, round(q[5], 6))
+                    score = (state["switches"], state["total_motion"],
+                             -state["min_j6_margin"])
+                    old = next_states.get(key)
+                    if old is None or score < old[0]:
+                        next_states[key] = (score, state)
+            if not next_states:
+                uncertain = query_status in {"SERVICE_ERROR", "PARTIAL"}
+                return dict(base,
+                            status="INCOMPLETE" if uncertain else "NO_SAFE_SEQUENCE",
+                            reason=("SERVICE_ERROR_WITHOUT_SAFE_CANDIDATE" if uncertain
+                                    else "NO_LIMIT_COMPLIANT_CANDIDATE"),
+                            queried_waypoints=checked, candidate_query_calls=checked,
+                            service_error_waypoints=service_error_waypoints,
+                            incomplete_query=uncertain,
+                            failure_waypoint=dict(
+                                segment_id=segment.get("segment_id"), index=index,
+                                checked_waypoints=checked - 1,
+                                query_status=query_status,
+                                candidate_count=len(candidates),
+                                rejected_candidate_transitions=rejected,
+                                service_error_spaces=report.get("service_error_spaces", []),
+                                no_solution_spaces=report.get("no_solution_spaces", [])),
+                            elapsed_s=max(0.0, time.monotonic() - started))
+            states = [item[1] for item in next_states.values()]
+    selected = min(states, key=lambda state: (
+        state["switches"], state["total_motion"], -state["min_j6_margin"]))
+    runs = selected["runs"]
+    return dict(base, status="PARTIAL" if service_error_waypoints else "SUCCEEDED",
+                queried_waypoints=checked,
+                candidate_query_calls=checked,
+                service_error_waypoints=service_error_waypoints,
+                incomplete_query=service_error_waypoints > 0,
+                selected_solution_spaces=runs[:32],
+                selected_solution_spaces_truncated=len(runs) > 32,
+                solution_space_switches=selected["switches"],
+                j6_min_deg=round(selected["j6_min"], 3),
+                j6_max_deg=round(selected["j6_max"], 3),
+                minimum_j6_remaining_deg=round(selected["min_j6_margin"], 3),
+                max_joint_step_deg=round(selected["max_step"], 3),
+                total_joint_motion_deg=round(selected["total_motion"], 3),
+                sequence_sha256=selected["hasher"].hexdigest(),
+                failure_waypoint=None,
+                elapsed_s=max(0.0, time.monotonic() - started))

@@ -85,6 +85,7 @@ goal.source_mode = 'SIMULATION'
 - 관절·모터 온도는 M0609의 1~6 순서다. 신호마다 `*_quality`와 측정 시각을 둔다. 미확인 배열은 비우고 품질은 `UNKNOWN`, 미지원 온도는 `UNSUPPORTED`로 보낸다. TCP 측정 시각은 `tcp.header.stamp`다.
 - 기본 생성값은 성공·정지 완료·유효한 측정으로 취급하지 않는다. `success`, `validation_passed`, 고정 확인, 정지 접수는 기본 false이고 상태·품질은 `UNKNOWN`이다. 송신자는 모드를 명시해야 한다.
 - 정지 서비스는 접수만 응답한다. 실제 정지 확인은 ProcessState 및 ExecuteProcess 결과를 사용한다. `engraving_progress`·완료 segment만으로 압력이나 실물 품질 합격을 판단하지 않는다. 구간별 가공 판정은 [별도 제안](../../../docs/HMI_PATH_QUALITY_PROPOSAL.md)이며 이번 타입에 추가하지 않았다.
+- `ProcessEvent.event_type=DIAGNOSTIC`은 실행 승인과 분리된 읽기 전용 진단이다. `code=IK_CANDIDATE_DIAGNOSTIC`은 선택 후보 space·J6 범위·최소 잔여각·실패 waypoint 요약을 전달하지만, Cartesian 모션이 같은 solution space를 유지한다는 보장이나 실행 허가로 해석하지 않는다.
 
 전체 필드 자료형·누락 값·상태 해석·배포 규칙은 [명세 12절](../../../docs/INTERFACE_RECOMMENDATION.md#12-공통-타입-구현과-배포--2026-09-19)을 따른다.
 
