@@ -7,7 +7,12 @@ import type {
   Profile,
   WorkAreaPolicy,
 } from "./api";
-import { cutStrokes, cylinderPoint, previewSegments } from "./preview";
+import {
+  cutPathCount,
+  cutStrokes,
+  cylinderPoint,
+  previewSegments,
+} from "./preview";
 import { mm, policyWorkArea, profileWorkArea } from "./workArea";
 import WorkAreaSummary from "./WorkAreaSummary";
 
@@ -393,8 +398,8 @@ export function UnwrappedPreview({
                   : "모의 중심선 샘플 · 첨부 이미지의 실제 변환 결과가 아닙니다."}
             </b>
             <span>
-              {result.path_id.slice(0, 8)} · v{result.path_version} ·{" "}
-              {result.segment_count}개 구간
+              조각 경로 {cutPathCount(result)}개 · 전체 실행 구간{" "}
+              {result.segment_count}개
             </span>
           </>
         ) : (

@@ -16,6 +16,15 @@ export function cutStrokes(path: PathResult | null): Stroke[] {
   );
 }
 
+// 한 도안 획이 waypoint 한도 때문에 여러 CUT segment로 나뉘어도
+// HMI의 조각 경로 수에는 한 번만 센다. 이음매 분할처럼 실제로 별도
+// 접근·후퇴하는 획은 서로 다른 stroke_id이므로 각각 한 경로가 된다.
+export function cutPathCount(path: PathResult | null) {
+  return new Set(
+    cutStrokes(path).map((segment) => segment.stroke_id || segment.segment_id),
+  ).size;
+}
+
 export function matchesPreview(path: PathResult, contract: string) {
   const p = path.preview;
   return (
