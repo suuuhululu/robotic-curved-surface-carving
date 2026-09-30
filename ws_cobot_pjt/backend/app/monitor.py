@@ -13,7 +13,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, FileResponse
 from PIL import Image, ImageOps, UnidentifiedImageError
 
-from .monitor_contract import GenerateInput, RunInput, StopInput, InspectionInput, ScenarioInput, PreparationInput
+from .monitor_contract import (GenerateInput, RunInput, StopInput,
+    RestartFromBeginningInput, InspectionInput, ScenarioInput, PreparationInput)
 from .monitor_service import MonitorService, DomainError
 from .storage import Storage
 from .artifact_loader import ArtifactLoadError
@@ -261,6 +262,10 @@ def create_app(data_dir=None,tick=.4):
 
     @app.post('/api/operator/runs/{rid}/stop',status_code=202)
     async def stop(rid:str,body:StopInput):return await app.state.service.stop(rid,body.model_dump(mode='json'))
+
+    @app.post('/api/operator/runs/{rid}/restart-from-beginning')
+    async def restart_from_beginning(rid:str,body:RestartFromBeginningInput):
+        return await app.state.service.restart_from_beginning(rid,body.model_dump(mode='json'))
 
     @app.get('/api/operator/alarms')
     async def alarms():return await asyncio.to_thread(app.state.store.alarms)

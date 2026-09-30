@@ -109,6 +109,7 @@ export default function Monitor() {
     [generation, setGeneration] = useState<Generation | null>(null),
     [generating, setGenerating] = useState(false);
   const [cancelPending, setCancelPending] = useState(false);
+  const [retryCheckPending, setRetryCheckPending] = useState(false);
   const [error, setError] = useState(""),
     [toast, setToast] = useState(""),
     [pending, setPending] = useState(false),
@@ -124,7 +125,8 @@ export default function Monitor() {
     lastPacket = useRef(0),
     live = useRef(true);
   const startBody = useRef<unknown>(null),
-    stopId = useRef<{ run: string; id: string } | null>(null);
+    stopId = useRef<{ run: string; id: string } | null>(null),
+    restartId = useRef<{ run: string; id: string } | null>(null);
   const generationRequest = useRef<{ body: unknown; revision: number } | null>(
     null,
   );
@@ -134,8 +136,7 @@ export default function Monitor() {
   const run = snapshot?.active_run;
   const ikCandidateDiagnostic = snapshot?.events.find(
     (event) =>
-      event.run_id === run?.run_id &&
-      event.code === "IK_CANDIDATE_DIAGNOSTIC",
+      event.run_id === run?.run_id && event.code === "IK_CANDIDATE_DIAGNOSTIC",
   );
   const returnHomeDiagnostic = snapshot?.events.find(
     (event) =>
@@ -637,6 +638,44 @@ export default function Monitor() {
       setToast("검사 기록을 저장했습니다.");
     } catch (e) {
       setError((e as Error).message);
+    }
+  }
+
+  async function restartFromBeginning() {
+    if (!run) return;
+    setRetryCheckPending(true);
+    setError("");
+    if (restartId.current?.run !== run.run_id)
+      restartId.current = { run: run.run_id, id: crypto.randomUUID() };
+    try {
+      await request(
+        `/runs/${run.run_id}/restart-from-beginning`,
+        {
+          schema_version: SCHEMA_VERSION,
+          request_id: restartId.current.id,
+          operator_confirmed_restart: true,
+        },
+        25000,
+      );
+      const latest = await request<Snapshot>("/snapshot");
+      setSnapshot(latest);
+      setResult(null);
+      setExecutionPath(null);
+      setGeneration(null);
+      setReviewed(false);
+      setStale(false);
+      setDrillConfirmation(null);
+      setStartUncertain(false);
+      startBody.current = null;
+      stopId.current = null;
+      setNav("prepare");
+      setToast(
+        "STANDBY·실제 정지를 확인했습니다. 기존 경로는 재실행하지 않으며 새 준비·측정부터 시작하세요.",
+      );
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setRetryCheckPending(false);
     }
   }
 
@@ -1392,10 +1431,29 @@ export default function Monitor() {
                     </p>
                     {run?.error_code &&
                       normalizeErrorCode(run.error_code) !== "NONE" && (
-                        <p className="error-detail">
-                          코드 {normalizeErrorCode(run.error_code)} · 조치:{" "}
-                          {errorGuidance(run.error_code).action}
-                        </p>
+                        <>
+                          <p className="error-detail">
+                            코드 {normalizeErrorCode(run.error_code)} · 조치:{" "}
+                            {errorGuidance(run.error_code).action}
+                          </p>
+                          {run.status === "UNKNOWN" && (
+                            <button
+                              type="button"
+                              className="secondary compact"
+                              onClick={restartFromBeginning}
+                              disabled={retryCheckPending}
+                            >
+                              {retryCheckPending ? (
+                                <LoaderCircle className="spin" size={14} />
+                              ) : (
+                                <RotateCcw size={14} />
+                              )}
+                              {retryCheckPending
+                                ? "정지 상태 확인 중"
+                                : "정지 확인 후 처음부터 다시"}
+                            </button>
+                          )}
+                        </>
                       )}
                     {ikCandidateDiagnostic && (
                       <p className="ik-candidate-diagnostic" role="status">

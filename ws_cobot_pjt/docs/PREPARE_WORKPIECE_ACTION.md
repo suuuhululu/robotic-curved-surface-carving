@@ -61,8 +61,8 @@ Action 파일: [PrepareWorkpiece.action](../ws_cobot1/src/c2_interfaces/action/P
 - `height_m`은 설정의 수동 높이, `axis_xy_m`/`radius_m`/`top_z_m`은 유효한 접촉에서 계산한다. `bottom_z_m=top_z_m-height_m`. `work_v_range_m=[상단 여유, 높이-하단 여유]`는 윗면에서 아래 방향 거리, `work_z_range_m=[top_z-v_max, top_z-v_min]`는 절대 z다.
 - 현 단계는 수직축 가정(`vertical_axis_assumed=true`, `tilt_measured=false`), 정밀 기울기/테이퍼 측정 완료가 아니다. 잔차는 채택한 fit의 RMS/max 값을 반환한다.
 - 2026-09-29 사용자 요청에 따른 로컬 측정 정책: 입력 `workcell.fit_outlier_max_exclusions=1`이면
-  8점을 모두 취득한 뒤 유일하게 식별되는 이상점 1개를 계산에서 제외할 수 있다(기본값 0).
-  남은 7점은 같은 잔차·반지름·중심·높이 조건을 통과해야 한다. FIT 단계에서 재측정 모션은 생성하지 않는다.
+  8점 원 맞춤이 기준을 넘으면 1점씩 제외한 후보 중 잔차가 가장 작은 7점 조합을 채택한다(기본값 0).
+  후보 유일성이나 추가 잔차·반지름·중심 조건으로 결과를 다시 차단하지 않는다. FIT 단계에서 재측정 모션은 생성하지 않는다.
   `contact_*`에는 제외점도 포함한 원본 9접촉(윗면 1+옆면 8)을 유지하며,
   `message`에 제외 번호·계산 사용 개수와 원본 보존을 명시한다. 계산용 점 번호와 제외점 잔차는
   공정 내부 measurement에도 보존한다. ROS v2 필드·타입은 변경하지 않으며 기존 서버는

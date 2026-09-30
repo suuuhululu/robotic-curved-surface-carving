@@ -17,6 +17,21 @@ from typing import Callable, Dict, List, Optional
 
 # ---------------------------------------------------------------- 공통 결과 형식 ----
 OUTCOMES = ("SUCCEEDED", "FAILED", "STOPPED", "UNKNOWN")
+DEFAULT_COMMAND_RESPONSE_TIMEOUT_S = 2.0
+
+
+def command_response_timeout(profile, remaining_s):
+    """모션 서비스의 명령 접수 응답 대기시간.
+
+    이동 완료 제한과 구분한다. 설정이 없는 기존 프로파일은 종전 2초를 유지하고,
+    명시값도 해당 모션에 남은 전체 제한 시간을 넘지 않는다.
+    """
+    value = profile.get(
+        "command_response_timeout_s", DEFAULT_COMMAND_RESPONSE_TIMEOUT_S)
+    if (type(value) not in (int, float) or not math.isfinite(value)
+            or value <= 0 or not math.isfinite(remaining_s) or remaining_s <= 0):
+        raise ValueError("명령 접수 응답 제한 시간은 양의 유한 값이어야 함")
+    return min(float(value), float(remaining_s))
 
 
 @dataclass
@@ -840,6 +855,8 @@ class DoosanRobotAdapter(RobotAdapter):
             angle_tol = float(profile.get('angle_tol_deg', 0.15))
             if any(not math.isfinite(v) or v <= 0 for v in (vel, acc, tol, angle_tol, deadline_s)):
                 raise ValueError('속도·가속도·허용오차·제한 시간은 양의 유한 값이어야 함')
+            # 서비스 접수 응답과 실제 이동 완료는 서로 다른 제한 시간이다.
+            command_response_timeout(profile, deadline_s)
             if any(len(p) != 7 or any(not math.isfinite(v) for v in p) for p in poses):
                 raise ValueError('유효한 pose7 필요')
             points = [pose_to_posx(p, self.tool_offset_m) for p in poses]
@@ -880,15 +897,17 @@ class DoosanRobotAdapter(RobotAdapter):
         sent = False
         try:
             sent = True  # 응답 실패도 접수 불명: 정지 확인하며 재전송하지 않는다.
+            response_timeout = command_response_timeout(profile, remaining)
             if spline:
                 from std_msgs.msg import Float64MultiArray
                 kind = self._srv['MoveSplineTask']
                 req = kind.Request(pos=[Float64MultiArray(data=[float(v) for v in p]) for p in points],
                                    pos_cnt=len(points), vel=[vel, vel], acc=[acc, acc], time=0.0,
                                    ref=0, mode=0, opt=0, sync_type=1)
-                result = self._call('motion/move_spline_task', kind, req, timeout=min(2.0, remaining))
+                result = self._call('motion/move_spline_task', kind, req,
+                                    timeout=response_timeout)
             else:
-                result = self._send_line(points[0], vel, acc, min(2.0, remaining))
+                result = self._send_line(points[0], vel, acc, response_timeout)
             if result is None or result.success is not True:
                 return self._motion_failure('FAILED', 'NOT_READY', '이동 명령 거부/응답 없음', step)
             closed_excursion = closed_angle = 0.0

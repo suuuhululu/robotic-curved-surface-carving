@@ -318,7 +318,7 @@ def test_fixed_drill_finishes_without_pick_clean_place_or_open(client):
     rid=c.post('/api/operator/runs',json=run_body(p)).json()['run_id']
     wait(c,f'/api/operator/runs/{rid}',lambda r:r['status']=='SUCCEEDED')
     phases=[v['phase'] for k,v in packets if k=='event' and v['event_type']=='PHASE_CHANGED']
-    assert phases==['PRECHECK','ENTRY','ENGRAVE','RETURN_HOME','FINISH']
+    assert phases==['PRECHECK','ENTRY','ENGRAVE','FINISH']
     states=[v for k,v in packets if k=='state']
     assert not any(s['grip_state'] in ('OPEN','OPENING') for s in states)
     assert states[-1]['mounted_tool_id']=='engraving_drill' and states[-1]['grip_state']=='GRIPPED'

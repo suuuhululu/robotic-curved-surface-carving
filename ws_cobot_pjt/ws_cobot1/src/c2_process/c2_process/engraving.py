@@ -185,6 +185,17 @@ def validate_path(path: Dict, context: ExecutionContext) -> Optional[StepResult]
             return StepResult("FAILED", "PROFILE_MISMATCH", f"segment {s.get('segment_id')} motion_profile_id {pid!r} 없음", "validate")
         if context.source_mode == "REAL" and context.motion_profiles[pid].get("completion_timeout_s") is None:
             return StepResult("FAILED", "UNSUPPORTED_RECIPE", f"profile {pid} 에 completion_timeout_s 없음 (REAL 거절)", "validate")
+        response_timeout = context.motion_profiles[pid].get("command_response_timeout_s")
+        completion_timeout = context.motion_profiles[pid].get("completion_timeout_s")
+        if "command_response_timeout_s" in context.motion_profiles[pid] and (
+                type(response_timeout) not in (int, float)
+                or not math.isfinite(response_timeout) or response_timeout <= 0
+                or (type(completion_timeout) in (int, float)
+                    and response_timeout > completion_timeout)):
+            return StepResult(
+                "FAILED", "INVALID_INPUT",
+                f"profile {pid} command_response_timeout_s 범위 오류",
+                "validate")
     return None
 
 

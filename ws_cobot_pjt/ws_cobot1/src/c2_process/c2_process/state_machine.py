@@ -1,7 +1,7 @@
 """고정 드릴 공정의 단계 순서와 결과 전파. 장치 명령은 주입된 함수가 담당한다.
 
 PRECHECK는 승인된 경로·설정·현재 로봇 상태를 검사한다. TOOL_CHECK는 저장된
-드릴 끝 보정값을 1점 확인한다. 시작/복귀 콜백은 경로 외부 연결 이동을, 조각 함수는 경로 내부 구간을 수행한다.
+드릴 끝 보정값을 1점 확인한다. 시작 콜백은 경로 진입을, 조각 함수는 마지막 표면 이탈을 포함한 경로 내부 구간을 수행한다.
 집기·반납·청소와 그리퍼 열기 명령은 이 공정에서 호출하지 않는다.
 """
 
@@ -54,7 +54,6 @@ def run_process(
     if (not callable(precheck) or not callable(tool_check) or not callable(engrave)
             or (on_phase is not None and not callable(on_phase))
             or (on_progress is not None and not callable(on_progress))
-            or ((go_to_start is None) != (return_home is None))
             or (go_to_start is not None and not callable(go_to_start))
             or (return_home is not None and not callable(return_home))):
         return StepResult("FAILED", "INVALID_INPUT", "공정 콜백 형식 오류", "precheck")
@@ -178,11 +177,10 @@ def run_preparation(context, *, status_check, motion_check, measure, confirm_res
 
 def run_prepared_process(context, *, precheck, engrave, enter=None, return_home=None,
                          on_phase=None, on_progress=None):
-    """준비 성공 기록을 연결한 실행: 최종 검사 → 검사된 entry → 조각 → 검사된 HOME 복귀.
+    """준비 성공 기록을 연결한 실행: 최종 검사 → 검사된 entry → 조각·표면 이탈.
 
-    ``enter``와 ``return_home``은 PRECHECK가 확정한 동일 계획만 실행한다.
-    콜백이 없으면 기존 SIM/호환 흐름을 유지하며, REAL 공정에서 필요 여부는
-    coordinator가 결정한다.
+    현재 coordinator는 경로의 마지막 RETRACT까지만 실행하고 HOME 복귀 콜백을
+    전달하지 않는다. ``return_home``은 과거 실행 시험과 호환하기 위한 선택 인자다.
     """
     if enter is not None and not callable(enter):
         return StepResult("FAILED", "INVALID_INPUT", "entry 콜백 형식 오류", "precheck")

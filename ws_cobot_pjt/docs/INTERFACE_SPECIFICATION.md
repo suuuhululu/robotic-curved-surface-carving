@@ -21,9 +21,9 @@
 
 REAL 또는 승인된 `entry_planning.enabled=true`의 prepared 정상 흐름은 다음과 같다.
 
-`MEASURE → 측정 원본 저장 → BIND_SNAPSHOT → GeneratePath → 미리보기 → 별도 ExecuteProcess → PRECHECK → ENTRY → ENGRAVE → RETURN_HOME → FINISH`
+`MEASURE → 측정 원본 저장 → BIND_SNAPSHOT → GeneratePath → 미리보기 → 별도 ExecuteProcess → PRECHECK → ENTRY → ENGRAVE → RETRACT → FINISH`
 
-entry 비활성 호환 흐름에서는 `ENTRY`와 `RETURN_HOME` 콜백이 생략될 수 있다. `RETURN_HOME`은 entry 활성 prepared 성공 경로에 연결되어 있다. 실패·취소·정지 미확인 뒤 무조건 HOME으로 움직인다는 뜻은 아니다. 각 단계가 실패하면 다음 단계에 진입하지 않는다.
+entry 비활성 호환 흐름에서는 `ENTRY`가 생략될 수 있다. 정상 실행은 생성된 본 경로의 마지막 `RETRACT`로 표면에서 이탈하고 끝나며 별도 HOME 복귀는 수행하지 않는다. 각 단계가 실패하면 다음 단계에 진입하지 않는다.
 
 ## 2. 계약 원본과 책임
 
@@ -164,7 +164,7 @@ HTTP 준비 입력에는 `schema_version`, `source_mode`, `preparation_id`, `mea
 | 준비 연결 | `PENDING`, `MEASUREMENT_ONLY`, `MEASURED_UNBOUND`, `BOUND_MOCK`, `BOUND_ROS`, `UNCONFIRMED`, `REPREPARATION_REQUIRED` |
 | 경로 생성 | `ACCEPTED`, `RUNNING`, `CANCELING`, `SUCCEEDED`, `FAILED`, `UNKNOWN` |
 | 실행 | `ACCEPTED`, `RUNNING`, `STOPPING`, `STOPPED`, `SUCCEEDED`, `FAILED`, `UNKNOWN` |
-| prepared 단계 | `PRECHECK`, `ENTRY`, `ENGRAVE`, `RETURN_HOME`, `FINISH` |
+| prepared 단계 | `PRECHECK`, `ENTRY`, `ENGRAVE`, `FINISH` (`ENGRAVE` 본 경로에 마지막 `RETRACT` 포함) |
 | 정지 | `NONE`, `REQUESTED`, `ACCEPTED`, `STOPPING`, `CONFIRMED`, `FAILED`, `UNKNOWN` |
 
 `connection=STALE`, 실행/준비/생성 `UNKNOWN`, `stop_state=UNKNOWN`, `storage_error`가 있으면 새 작업을 시작하지 않는다.
@@ -204,7 +204,7 @@ HTTP 준비 입력에는 `schema_version`, `source_mode`, `preparation_id`, `mea
 | Result | `run_id`, `outcome`, `error_code`, `message`, `last_completed_segment_id`, `log_id` |
 | Feedback | `run_id`, `phase`, `engraving_progress`, `completed_segment_id`, `elapsed_s` |
 
-`outcome`은 `SUCCEEDED`, `FAILED`, `STOPPED`, `UNKNOWN` 중 하나다. REAL 또는 승인된 entry 활성 prepared 단계는 `PRECHECK → ENTRY → ENGRAVE → RETURN_HOME → FINISH`다. entry 비활성 prepared 흐름에서는 `ENTRY`와 `RETURN_HOME`이 생략될 수 있고, 직접 실행 호환 경로에서는 `TOOL_CHECK`, `APPROACH`, `RETRACT`가 보일 수 있으므로 HMI는 알려지지 않은 단계도 원문을 보존한다.
+`outcome`은 `SUCCEEDED`, `FAILED`, `STOPPED`, `UNKNOWN` 중 하나다. REAL 또는 승인된 entry 활성 prepared 단계는 `PRECHECK → ENTRY → ENGRAVE → RETRACT → FINISH`다. entry 비활성 prepared 흐름에서는 `ENTRY`가 생략될 수 있고, 직접 실행 호환 경로에서는 `TOOL_CHECK`, `APPROACH`, `RETRACT`가 보일 수 있으므로 HMI는 알려지지 않은 단계도 원문을 보존한다.
 
 ### 5.4 `/c2/stop_process` · `StopProcess` Service
 
@@ -243,6 +243,7 @@ HTTP 준비 입력에는 `schema_version`, `source_mode`, `preparation_id`, `mea
 | 경로 생성 | 120초 | 취소 전달 후 최대 5초 결과 대기, 미확인은 `UNKNOWN` |
 | ROS Goal 수락 | 3초 | 늦은 수락에도 취소 요청, 결과는 미확인 |
 | 실행 Result | 최대 3600초 | 시간 초과/통신 오류는 자동 재실행하지 않음 |
+| 로봇 모션 서비스 접수 응답 | 실행 프로파일 `command_response_timeout_s`; 현재 5초 | 실제 이동 완료 제한과 구분. 응답 미확인은 같은 모션을 재전송하지 않고 정지 확인 후 `UNKNOWN` |
 | Stop Service 응답 | 1초 | 응답 미확인 시 `STOP_UNCONFIRMED` |
 | 실제 정지 확인 | 접수 후 3초 | 미확인 시 실행 `UNKNOWN`, 새 작업 차단 |
 
@@ -250,6 +251,7 @@ HTTP 준비 입력에는 `schema_version`, `source_mode`, `preparation_id`, `mea
 - 같은 `request_id`에 다른 입력은 `REQUEST_CONFLICT`다.
 - 새 실행 요청마다 서버가 새 `run_id`를 만든다.
 - `UNKNOWN`은 다른 요청이나 늦게 도착한 성공으로 자동 해제하지 않는다.
+- HMI의 `정지 확인 후 처음부터 다시`는 제어기의 최신 읽기 전용 관측에서 `robot_state=STANDBY`, `motion_status=0`, REAL/AUTO와 현재 관절·TCP 좌표를 확인한 경우에만 UNKNOWN 실행을 실패 종료한다. 이 확인은 모션을 만들지 않으므로 재시작 직후 빈 문자열일 수 있는 TCP/load 이름은 해제 조건으로 사용하지 않는다. 새 준비·실행에서는 등록 TCP/load를 다시 엄격하게 검사한다. 기존 BIND를 무효화하며 실패 모션이나 기존 경로를 재전송하지 않는다.
 - 준비/생성/실행/미확인 작업이 있으면 겹치는 작업은 `BUSY`로 거절한다.
 - 진행 중 PRECHECK·측정·조각을 프로세스 종료 뒤 이어가는 pause/resume 계약은 없다. 다음 날 운용은 확인된 정지와 새 준비부터 시작한다.
 
@@ -278,15 +280,15 @@ HTTP 준비 입력에는 `schema_version`, `source_mode`, `preparation_id`, `mea
 - HMI의 정지 버튼은 소프트웨어 공정 정지 요청이며 물리적 비상정지 장치가 아니다.
 - REAL 경로의 `real_execution_allowed=true`는 실행 후보 표시다. 공정 노드의 PRECHECK·IK·관절 검사와 현장 감독을 대체하지 않는다.
 - 경로 진행률과 완료 segment는 로봇 명령 진행 정보다. 실제 홈 깊이·선폭·조각 품질 합격이 아니다.
-- `RETURN_HOME`은 entry가 활성인 prepared 정상 성공 경로에서 검사된 계획으로 수행한다. 실패·보호정지·정지 미확인 뒤 자동 HOME 복귀를 지시하지 않는다.
+- 정상 성공 경로는 본 경로의 마지막 `RETRACT`까지만 실행한다. 별도 HOME 복귀 후보 생성·관절 검사·모션은 수행하지 않는다.
 - 철사 고정 중에는 그리퍼 열기, 자동 집기·반납·청소를 요청하지 않는다.
-- 이 문서는 최신 main 코드 계약을 설명하며 실제 M0609에서 모든 오류·정지·HOME 복귀와 반복 가공 품질이 검증되었다는 뜻은 아니다.
+- 이 문서는 최신 main 코드 계약을 설명하며 실제 M0609에서 모든 오류·정지·마지막 표면 이탈과 반복 가공 품질이 검증되었다는 뜻은 아니다.
 
-## 9. 코드 대조 결과 · 2026-09-25
+## 9. 코드 대조 결과 · 2026-09-30
 
 | 발견한 불일치 | 코드 근거 | 조치 |
 | --- | --- | --- |
-| 주요 문서가 entry 활성 prepared 흐름에서 `RETURN_HOME`을 누락 | `state_machine.run_prepared_process`, `ProcessCoordinator._run_active`, 프런트 `preparedPhaseOrder` | 조건부 적용 범위와 함께 현재 구조·인터페이스·실행 안내·공통 메시지 주석 갱신 |
-| 공정 README가 HOME 복귀를 “미연결”로 설명 | 최신 coordinator가 검사된 `prepared_return_home`을 전달 | 정상 성공 경로 연결과 실패 후 자동 복귀 금지를 구분해 수정 |
+| 정상 완료의 HOME 복귀 후보가 관절 검사에서 공정을 차단 | `ProcessCoordinator._run_active`, 프런트 `preparedPhaseOrder` | 별도 HOME 계획·검사·실행을 제거하고 본 경로의 마지막 RETRACT 뒤 종료 |
+| 준비 화면의 경로·구간 수가 공정 관제에 없음 | `Previews`, `LivePathPreview` | 준비 화면에서 제거하고 실시간 경로 확인에 `조각 경로 N개 · 전체 실행 구간 M개` 표시 |
 | `PrepareWorkpiece` README/주석이 “권장안·통합 전”으로 표시 | FastAPI PreparationService, RosBridge, process ActionServer가 모두 사용 | 현재 연동 상태와 검증 경계를 반영 |
 | HMI Interface 문서가 주요 API 이름만 나열 | `monitor.py`, `monitor_contract.py`, `monitor_service.py`에 실제 계약 존재 | HTTP/WS 요청·상태·오류·제한 시간·중복/취소 규칙을 본 문서에 명시 |

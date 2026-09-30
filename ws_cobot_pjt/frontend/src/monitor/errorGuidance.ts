@@ -88,7 +88,9 @@ export function errorGuidance(code?: string | null): ErrorGuidance {
     return {
       severity: "ERROR",
       action:
-        "자동 재시도하지 말고 실제 로봇·도구·양초와 정지 상태를 현장에서 확인하세요.",
+        normalized === "COMMUNICATION_LOST"
+          ? "같은 모션을 재전송하지 말고 상태 재확인으로 연결·실제 정지 근거를 확인하세요."
+          : "자동 재시도하지 말고 실제 로봇·도구·양초와 정지 상태를 현장에서 확인하세요.",
       retry: "FORBIDDEN_UNTIL_CONFIRMED",
     };
   if (motionCodes.has(normalized))

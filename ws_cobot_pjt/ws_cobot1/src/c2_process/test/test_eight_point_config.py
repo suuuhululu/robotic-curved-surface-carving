@@ -46,6 +46,9 @@ def test_updated_config_passes_consumers_and_whole_measurement_scene():
     config['execution_profile'] = profile
     validate_real_execution_config(config)
     validate_real_execution_profiles(profile['execution_context'])
+    for motion in profile['execution_context']['motion_profiles'].values():
+        assert motion['command_response_timeout_s'] == 5.0
+        assert motion['command_response_timeout_s'] < motion['completion_timeout_s']
     w = config['workcell']; m = result['observed_state']['measurement']
     _validate(w, config['profiles'], MeasurementContext('config-test', 'config-preparation', 'REAL', profile_snapshot_id='config', profile_sha256='a'*64))
     tip = apply_tool_offset(w['home']['tcp_pose'], w['tool_offset_m'])

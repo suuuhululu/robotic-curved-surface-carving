@@ -444,13 +444,11 @@ def side_center_limit(w):
 
 
 def fit_center_limit(w, fit):
-    """실측 후 반지름 오차·최대 허용 잔차를 예약한 중심 여유. 탐색 범위는 유지한다."""
+    """8점이 실제 접촉된 뒤에는 탐색 구간 안의 실측 중심 이동을 허용한다."""
     limit = side_center_limit(w)
     if "side_search_m" not in w:
         return limit
-    radius_allowance = min(w["max_radius_error_m"],
-                           abs(fit["radius_m"]-w["seed_radius_m"])+w["max_fit_residual_m"])
-    return limit+w["max_radius_error_m"]-radius_allowance
+    return min(w["start_gap_m"],w["side_search_m"]-w["start_gap_m"])-w["pose_tolerance_m"]
 
 
 def fit_is_acceptable(w, fit, samples):
@@ -463,7 +461,7 @@ def fit_is_acceptable(w, fit, samples):
 
 
 def fit_measured_points(w, points):
-    """원본 8점 중 유일한 이상점 최대 1개를 계산에서만 제외한다. 모션 없음."""
+    """8점 기준 초과 시 가장 잘 맞는 7점 조합을 선택한다. 추가 모션 없음."""
     if len(points)!=8:
         raise MeasurementError("INVALID_MEASUREMENT","8점 미완료")
     full=fit_circle(points)
@@ -477,13 +475,14 @@ def fit_measured_points(w, points):
         try: candidate=fit_circle(others)
         except ValueError: continue
         residual=abs(math.dist(points[k][:2],candidate["axis_xy_m"])-candidate["radius_m"])
-        if fit_is_acceptable(w,candidate,others) and residual>w["max_fit_residual_m"]:
-            candidates.append((k+1,candidate,residual))
-    if len(candidates)!=1:
-        raise MeasurementError("INVALID_MEASUREMENT","단일 이상점 식별 불가; 추가 재측정 없음")
-    index,fit,residual=candidates[0]
+        candidates.append((k+1,candidate,residual))
+    if not candidates:
+        raise MeasurementError("INVALID_MEASUREMENT","7점 원 계산 불가")
+    index,fit,residual=min(candidates,key=lambda item:(
+        item[1]["residual_rms_m"],item[1]["residual_max_m"],-item[2],item[0]))
     return fit,dict(fit_used_point_indices=[i for i in range(1,9) if i!=index],
                     fit_excluded_point_indices=[index],fit_excluded_residual_m=residual,
+                    fit_selection="BEST_LEAVE_ONE_OUT",
                     fit_all_points=full)
 
 

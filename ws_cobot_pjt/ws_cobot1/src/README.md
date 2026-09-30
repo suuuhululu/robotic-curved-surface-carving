@@ -14,7 +14,7 @@ src/
 | --- | --- | --- |
 | [c2_interfaces](c2_interfaces/README.md) | 송수신 PC가 함께 빌드할 고정 드릴 v2 타입. 실행 노드는 없음 | `ros2 interface show ...` |
 | [c2_path](c2_path/README.md) | 경로 생성과 파일·기하 검증. 로봇 모션을 실행하지 않음 | `path_planner_node` |
-| [c2_process](c2_process/README.md) | MEASURE/BIND, PRECHECK, ENTRY, ENGRAVE, RETURN_HOME, 정지·상태 | `process_controller_node`, `real_preparation_node`, `real_process_node`, `virtual_cell_node` |
+| [c2_process](c2_process/README.md) | MEASURE/BIND, PRECHECK, ENTRY, ENGRAVE와 마지막 RETRACT, 정지·상태 | `process_controller_node`, `real_preparation_node`, `real_process_node`, `virtual_cell_node` |
 
 시스템 모니터의 ROS 클라이언트는 별도 ROS 패키지가 아니라
 [`backend/app/ros_bridge.py`](../../backend/README.md)의 `monitor_gateway_node`다.

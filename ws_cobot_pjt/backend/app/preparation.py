@@ -369,7 +369,7 @@ class PreparationService:
             await asyncio.to_thread(self.owner.store.save_preparation, deepcopy(self.current))
 
     async def begin(self, body):
-        from .monitor_service import DomainError
+        from .monitor_service import DomainError, restart_stationary_confirmed
         o = self.owner
         async with o.lock:
             if not self.snapshot()['supported']:
@@ -386,7 +386,8 @@ class PreparationService:
                     raise DomainError(
                         'NOT_READY', '고정 설비·그리퍼/드릴 장착·드릴 OFF·주변 경로·작업자 감시를 확인하세요.')
                 inspection = await self.refresh_hardware_inspection()
-                if inspection['payload']['state'] != 'READY':
+                if (inspection['payload']['state'] != 'READY'
+                        and not restart_stationary_confirmed(inspection['payload'])):
                     message = '; '.join(inspection['payload']['errors']) or '하드웨어 관측 미확인'
                     raise DomainError('NOT_READY', '읽기 전용 하드웨어 검사 실패: ' + message)
             if not o.fresh() or o.storage_error:

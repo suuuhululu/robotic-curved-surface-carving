@@ -1,7 +1,7 @@
 """고정 드릴 process_controller_node와 공정 함수 연결.
 
 기본 모드는 SIMULATION이다. REAL은 실물 어댑터·입력 로더·실행 저널과
-시작/복귀 함수를 명시적으로 연결한다. 모드와 다른 어댑터는 허용하지 않는다.
+경로 진입·실행 함수를 명시적으로 연결한다. 모드와 다른 어댑터는 허용하지 않는다.
 """
 
 import math
@@ -126,6 +126,13 @@ def check_preparation_status(adapter, evidence: PreconditionEvidence, settings: 
     selected = check_selected_tool_profiles(adapter, settings)
     if cancel is not None and cancel.is_set():
         return cancelled()
+    if (not selected.ok and selected.error_code == "PROFILE_MISMATCH"
+            and evidence.runtime_mode == "REAL"):
+        selected = adapter.select_tool_profile(
+            settings.get("tcp_profile_id"), settings.get("load_profile_id"),
+            profile_version=settings.get("tcp_profile_version"), deadline_s=10.0)
+        if cancel is not None and cancel.is_set():
+            return cancelled()
     if not selected.ok:
         return selected
     if initialize_controller is not None:
@@ -354,6 +361,12 @@ def validate_real_execution_profiles(execution):
         for key in ("vel_mm_s", "acc_mm_s2", "pos_tol_mm", "completion_timeout_s"):
             if not positive(profile.get(key)):
                 invalid(f"REAL motion_profiles.{pid}.{key} 양수 필요")
+        response_timeout = profile.get("command_response_timeout_s")
+        if ("command_response_timeout_s" in profile
+                and (not positive(response_timeout)
+                     or response_timeout > profile["completion_timeout_s"])):
+            invalid(
+                f"REAL motion_profiles.{pid}.command_response_timeout_s 범위 오류")
     policy = execution.get("entry_planning")
     if not isinstance(policy, Mapping) or policy.get("enabled") is not True:
         invalid("REAL execution_context.entry_planning.enabled=true 설정 필요")
@@ -1123,8 +1136,8 @@ class ProcessCoordinator:
             if not measurement_only and (journal is None or load_inputs is _missing_loader):
                 raise ValueError("REAL에는 입력 로더와 실행 저널이 필요함")
             if (not measurement_only and not preparation_required
-                    and (not callable(go_to_path_start_fn) or not callable(return_home_fn))):
-                raise ValueError("REAL에는 시작점 이동·홈 복귀 함수가 필요함")
+                    and not callable(go_to_path_start_fn)):
+                raise ValueError("REAL 직접 실행에는 시작점 이동 함수가 필요함")
         self.measurement_only = measurement_only
         self.preparation_required = preparation_required
         self._preparation_action_busy = False
@@ -1215,7 +1228,8 @@ class ProcessCoordinator:
             if result.ok:
                 result.observed_state["preparation_id"] = preparation_id
                 self._preparations[preparation_id] = (copy.deepcopy(result), adapter)
-            if result.outcome == "UNKNOWN":
+            if (result.outcome == "UNKNOWN"
+                    and result.observed_state.get("stop_confirmed") is not True):
                 self._motion_uncertain = True
             self._active = None
         return result
@@ -1432,7 +1446,9 @@ class ProcessCoordinator:
             if self._active is active:
                 self._active = None
             self._completed[request_id] = (identity, result)
-            if result.outcome == "UNKNOWN" and (preparation_id is not None or active.stop_requested):
+            if (result.outcome == "UNKNOWN"
+                    and result.observed_state.get("stop_confirmed") is not True
+                    and (preparation_id is not None or active.stop_requested)):
                 self._motion_uncertain = True
         return result
 
@@ -1504,7 +1520,6 @@ class ProcessCoordinator:
         entry_enabled = prepared and (self.runtime_mode == "REAL"
                                       or (isinstance(entry_policy, Mapping)
                                           and entry_policy.get("enabled") is True))
-        checked_return_home = {}
 
         def revalidate_prepared_readiness():
             """오래 걸린 IK 뒤 동일 입력과 최신 REAL 상태를 다시 확인한다.
@@ -1749,47 +1764,6 @@ class ProcessCoordinator:
                     checked.observed_state["plan_signature"] = signature
                     if context.checked_entry_plan_sha256 is not None:
                         checked.observed_state["entry_plan_sha256"] = context.checked_entry_plan_sha256
-                    if entry_enabled:
-                        home_kwargs = dict(
-                            entry_plan=context.checked_entry_plan,
-                            plan_signature=signature, cancel=context.cancel,
-                            joint_check_fn=self.joint_check_fn)
-                        if (self.return_home_plan_fn is plan_return_home_path
-                                and main_evaluation is not None):
-                            home_kwargs["predicted_end_joints_deg"] = (
-                                main_evaluation.final_joints_deg)
-                        home_started = time.monotonic()
-                        home = self.return_home_plan_fn(
-                            plan, dict(loaded.workcell), loaded.adapter, state,
-                            list(offset), context.joint_limits_deg, context.j6_margin_deg,
-                            context.motion_profiles, **home_kwargs)
-                        stage_metrics["return_home"] = {
-                            "stage_elapsed_s": max(0.0, time.monotonic() - home_started),
-                        }
-                        if isinstance(home, StepResult):
-                            home_ik_metrics = dict(home.observed_state.get("ik_metrics") or {})
-                            if "elapsed_s" in home_ik_metrics:
-                                home_ik_metrics["ik_elapsed_s"] = home_ik_metrics.pop("elapsed_s")
-                            stage_metrics["return_home"].update(home_ik_metrics)
-                        if not isinstance(home, StepResult):
-                            return StepResult("UNKNOWN", "INVALID_RESULT",
-                                              "HOME 복귀 계획 결과 형식 오류",
-                                              "return_home_planning")
-                        if not home.ok:
-                            return home
-                        if signature != execution_signature(dict(loaded.path), context):
-                            return StepResult("FAILED", "PROFILE_MISMATCH",
-                                              "HOME 복귀 검사 중 경로/설정 변경",
-                                              "return_home_planning")
-                        return_plan = home.observed_state.get("return_home_plan")
-                        return_sha = home.observed_state.get("return_home_plan_sha256")
-                        if not isinstance(return_plan, Mapping) or not isinstance(return_sha, str):
-                            return StepResult("UNKNOWN", "INVALID_RESULT",
-                                              "HOME 복귀 계획·해시 누락",
-                                              "return_home_planning")
-                        checked_return_home["plan"] = copy.deepcopy(dict(return_plan))
-                        checked_return_home["sha256"] = return_sha
-                        checked.observed_state["return_home_plan_sha256"] = return_sha
                     stage_metrics["total"] = {
                         "stage_elapsed_s": max(0.0, time.monotonic() - stage_started),
                         "inverse_kinematics_calls": sum(
@@ -1844,9 +1818,6 @@ class ProcessCoordinator:
         def go_to_start():
             return self.go_to_path_start_fn(dict(loaded.path), loaded.adapter, context)
 
-        def return_home():
-            return self.return_home_fn(loaded.adapter, context)
-
         def reported_precheck():
             result = precheck()
             if self.on_precheck_result is not None:
@@ -1871,27 +1842,17 @@ class ProcessCoordinator:
                     return StepResult("FAILED", "NOT_READY",
                                       "entry 실행 직전 동일 준비 BIND 미확인", "entry")
                 return self.entry_execute_fn(context.checked_entry_plan, loaded.adapter, context)
-            def prepared_return_home():
-                plan = checked_return_home.get("plan")
-                if not isinstance(plan, Mapping):
-                    return StepResult("FAILED", "NOT_READY",
-                                      "검사된 HOME 복귀 계획 없음", "return_home")
-                if context.checked_plan_signature != execution_signature(dict(loaded.path), context):
-                    return StepResult("FAILED", "PROFILE_MISMATCH",
-                                      "HOME 복귀 실행 전 경로/설정 변경", "return_home")
-                return self.return_home_execute_fn(plan, loaded.adapter, context)
             result = run_prepared_process(context, precheck=reported_precheck,
                                           enter=prepared_entry if entry_enabled else None,
                                           engrave=prepared_engrave, on_phase=on_phase,
-                                          on_progress=on_progress,
-                                          return_home=prepared_return_home if entry_enabled else None)
+                                          on_progress=on_progress)
             result.observed_state["preparation_id"] = preparation_id
             return result
 
         result = run_process(context, precheck=reported_precheck, tool_check=tool_check,
                              engrave=engrave, on_phase=on_phase, on_progress=on_progress,
                              go_to_start=go_to_start if self.go_to_path_start_fn else None,
-                             return_home=return_home if self.return_home_fn else None)
+                             return_home=None)
         return result
 
     def _finalize_stop(self, active: _ActiveRun, result: StepResult) -> StepResult:
@@ -2175,8 +2136,6 @@ def create_ros_node(load_inputs: Callable[[Mapping], ExecutionInputs] = _missing
 
         def cancel_goal(self, goal_handle):
             decision = self.coordinator.stop(goal_handle.request.run_id)
-            if decision.accepted and self.preparation:
-                self.preparation.invalidate()
             return CancelResponse.ACCEPT if decision.accepted else CancelResponse.REJECT
 
         def stop_request(self, request, response):
@@ -2188,8 +2147,6 @@ def create_ros_node(load_inputs: Callable[[Mapping], ExecutionInputs] = _missing
                 response.message = "v2 정지 요청만 지원"
                 return response
             decision = self.coordinator.stop(request.run_id)
-            if decision.accepted and self.preparation:
-                self.preparation.invalidate()
             response.accepted = decision.accepted
             response.run_id = request.run_id
             response.stop_state = decision.stop_state
@@ -2416,9 +2373,20 @@ def create_ros_node(load_inputs: Callable[[Mapping], ExecutionInputs] = _missing
             finally:
                 if observer_paused:
                     observer.resume()
+            # 정지 요청 접수 자체는 측정/BIND 무효화 근거가 아니다. 실제 정지가
+            # 확인되지 않은 실행만 폐기하고, 확인된 STOPPED는 새 경로에서 같은
+            # 양초 측정 스냅샷을 다시 사용할 수 있게 유지한다.
+            if (self.preparation and result.outcome == "UNKNOWN"
+                    and result.observed_state.get("stop_confirmed") is not True):
+                self.preparation.invalidate()
             with self.lock:
                 self.status = result.outcome
-                self.stop_state = "CONFIRMED" if result.outcome == "STOPPED" else self.stop_state
+                # 모션 명령 접수 응답이 끊겨 outcome은 UNKNOWN이어도 어댑터가
+                # QSTOP 뒤 실제 정지를 확인했으면 그 사실은 ProcessState에 보존한다.
+                # UNKNOWN 자체는 유지해 같은 모션이 다시 실행되지 않게 한다.
+                if (result.observed_state.get("stop_confirmed") is True
+                        or result.outcome == "STOPPED"):
+                    self.stop_state = "CONFIRMED"
                 self.error_code = result.error_code
                 self.message = result.message
                 self.segment_id = result.observed_state.get("last_completed_segment_id", self.segment_id)

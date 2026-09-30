@@ -2,7 +2,7 @@ import asyncio
 import time
 import pytest
 from types import SimpleNamespace
-from app.monitor_service import MonitorService
+from app.monitor_service import MonitorService, DomainError
 
 def test_success_is_finished_and_late_state_cannot_regress_it():
     async def scenario():
@@ -64,6 +64,79 @@ def test_terminal_topic_preserves_unknown_and_stop_latches(status,stop_state,inc
             run_id='x',status=incoming,stop_state=confirmed))
         assert service.run['status']==expected
         assert service.run['stop_state']==('CONFIRMED' if expected=='STOPPED' else stop_state)
+    asyncio.run(scenario())
+
+
+def test_unknown_run_keeps_unknown_outcome_but_records_late_stop_confirmation():
+    async def scenario():
+        service=MonitorService.__new__(MonitorService)
+        service.run=dict(run_id='x',status='UNKNOWN',stop_state='UNKNOWN',
+                         error_code='COMMUNICATION_LOST',message='명령 접수 응답 미확인')
+        service.mode='REAL';service.retired_epochs=set();service.contract_error=None
+        service.state=dict(source_epoch='epoch',seq=1);service.last_state=time.monotonic()
+        service.store=SimpleNamespace(save_run=lambda run:None)
+        saved=[];service.record=lambda fn,run:saved.append(run)
+        await service.receive('state',dict(
+            schema_version=2,source_mode='REAL',source_epoch='epoch',seq=2,
+            run_id='x',status='UNKNOWN',stop_state='CONFIRMED',
+            error_code='COMMUNICATION_LOST'))
+        assert service.run['status']=='UNKNOWN'
+        assert service.run['error_code']=='COMMUNICATION_LOST'
+        assert service.run['stop_state']=='CONFIRMED'
+        assert saved[-1]['stop_state']=='CONFIRMED'
+    asyncio.run(scenario())
+
+
+def test_restart_from_beginning_requires_readonly_standby_and_releases_unknown():
+    async def scenario():
+        service=MonitorService.__new__(MonitorService)
+        service.lock=asyncio.Lock();service.pending_run_ids=set()
+        service.run=dict(run_id='run-1',status='UNKNOWN',outcome='UNKNOWN',
+                         stop_state='UNKNOWN',error_code='COMMUNICATION_LOST',
+                         message='서비스 응답 미확인')
+        service.fresh=lambda:True
+        invalidated=[]
+        class Preparation:
+            async def refresh_hardware_inspection(self):
+                return {'payload':{'state':'NOT_READY',
+                    'errors':['현재 TCP/load 이름 조회 공백'],
+                    'observation':dict(robot_state=1,motion_status=0,
+                        robot_mode=1,robot_system=0,tcp_id='',load_id='',
+                        joints_deg=[0.]*6,controller_tcp_posx=[0.]*6)}}
+            async def invalidate_process_binding(self,reason):
+                invalidated.append(reason)
+        service.preparation=Preparation()
+        saved=[]
+        service.store=SimpleNamespace(save_run=lambda run:saved.append(run))
+        async def notice(*args,**kwargs):pass
+        service.notice=notice
+        body=dict(schema_version=2,request_id='restart-1',operator_confirmed_restart=True)
+        result=await service.restart_from_beginning('run-1',body)
+        assert result['status']=='FAILED' and result['outcome']=='UNKNOWN'
+        assert result['stop_state']=='CONFIRMED'
+        assert result['resolution']=='RESTART_FROM_BEGINNING'
+        assert invalidated and saved[-1]['status']=='FAILED'
+        assert await service.restart_from_beginning('run-1',body)==result
+    asyncio.run(scenario())
+
+
+def test_restart_from_beginning_keeps_unknown_when_standby_is_not_proven():
+    async def scenario():
+        service=MonitorService.__new__(MonitorService)
+        service.lock=asyncio.Lock();service.pending_run_ids=set()
+        service.run=dict(run_id='run-1',status='UNKNOWN',stop_state='UNKNOWN')
+        service.fresh=lambda:True
+        class Preparation:
+            async def refresh_hardware_inspection(self):
+                return {'payload':{'state':'NOT_READY','errors':['로봇이 STANDBY/정지 상태가 아님'],
+                    'observation':dict(robot_state=2,motion_status=1,
+                        robot_mode=1,robot_system=0,joints_deg=[0.]*6,
+                        controller_tcp_posx=[0.]*6)}}
+        service.preparation=Preparation()
+        with pytest.raises(DomainError,match='STANDBY'):
+            await service.restart_from_beginning('run-1',dict(
+                schema_version=2,request_id='restart-1',operator_confirmed_restart=True))
+        assert service.run['status']=='UNKNOWN'
     asyncio.run(scenario())
 
 

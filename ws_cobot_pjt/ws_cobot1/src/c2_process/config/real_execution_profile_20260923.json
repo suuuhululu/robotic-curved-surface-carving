@@ -42,7 +42,8 @@
         "acc_mm_s2": 10.0,
         "pos_tol_mm": 0.2,
         "angle_tol_deg": 0.15,
-        "completion_timeout_s": 90.0
+        "completion_timeout_s": 90.0,
+        "command_response_timeout_s": 5.0
       },
       "candle_cut": {
         "id": "candle_cut",
@@ -50,7 +51,8 @@
         "acc_mm_s2": 10.0,
         "pos_tol_mm": 0.2,
         "angle_tol_deg": 0.15,
-        "completion_timeout_s": 90.0
+        "completion_timeout_s": 90.0,
+        "command_response_timeout_s": 5.0
       },
       "candle_travel": {
         "id": "candle_travel",
@@ -58,7 +60,8 @@
         "acc_mm_s2": 10.0,
         "pos_tol_mm": 0.2,
         "angle_tol_deg": 0.15,
-        "completion_timeout_s": 90.0
+        "completion_timeout_s": 90.0,
+        "command_response_timeout_s": 5.0
       },
       "candle_retract": {
         "id": "candle_retract",
@@ -66,7 +69,8 @@
         "acc_mm_s2": 10.0,
         "pos_tol_mm": 0.2,
         "angle_tol_deg": 0.15,
-        "completion_timeout_s": 90.0
+        "completion_timeout_s": 90.0,
+        "command_response_timeout_s": 5.0
       }
     },
     "engraving_workspace": {"frame_id": "c2_base", "waypoint_min_z_m": 0.05},
