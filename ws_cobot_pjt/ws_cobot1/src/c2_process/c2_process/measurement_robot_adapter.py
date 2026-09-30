@@ -190,16 +190,23 @@ def check_measurement_scene(steps,w,initial):
         for i in range(n+1):
             native=interpolate(prev,target,i/n);tcp=[x/1000 for x in native[:3]]
             tip=posx_to_pose(native,offset);label=step['label']
-            if any(not a<=v<=b for v,a,b in zip(tcp,scene['tcp_min_m'],scene['tcp_max_m'])):
-                raise MeasurementError('SCENE_REJECTED','검사한 작업대 범위 밖')
             if tool_axis_in_base(tip,'+z')[2]>-math.cos(math.radians(scene['upright_tolerance_deg'])):
                 raise MeasurementError('SCENE_REJECTED','그리퍼 수직 자세 범위 초과')
-            if min(tcp[2],tip[2])>=scene['overhead_clearance_z_m']:
-                count+=1;continue
             dx,dy=tcp[0]-tip[0],tcp[1]-tip[1];den=dx*dx+dy*dy
             t=max(0,min(1,((center[0]-tip[0])*dx+(center[1]-tip[1])*dy)/den)) if den else 0
             gap=math.hypot(tip[0]+t*dx-center[0],tip[1]+t*dy-center[1])-radius
             minimum=min(minimum,gap)
+            xy_in_bounds=all(a<=v<=b for v,a,b in zip(tcp[:2],scene['tcp_min_m'][:2],scene['tcp_max_m'][:2]))
+            z_in_bounds=scene['tcp_min_m'][2]<=tcp[2]<=scene['tcp_max_m'][2]
+            # 조각 허용 높이에서 끝난 뒤 첫 준비를 시작할 수 있어야 한다.
+            # 낮은 Z 예외는 이미 원통 외곽 여유가 확보된 HOME 수직 상승에만 둔다.
+            low_outer_home_lift=(label=='home_lift' and tcp[2]<scene['tcp_min_m'][2]
+                                 and tcp[2]>=w['top']['expected_tcp_z_range_m'][0]-w['height_m']
+                                 and gap>=scene['outer_min_gap_m'])
+            if not xy_in_bounds or (not z_in_bounds and not low_outer_home_lift):
+                raise MeasurementError('SCENE_REJECTED','검사한 작업대 범위 밖')
+            if min(tcp[2],tip[2])>=scene['overhead_clearance_z_m']:
+                count+=1;continue
             if label.startswith('home_'):
                 h=w['home'];at_home=math.dist(tcp[:2],h['tcp_pose'][:2])<=h['corridor_xy_tolerance_m']
                 at_top=math.dist(tcp[:2],center)<=h['corridor_xy_tolerance_m']

@@ -29,18 +29,17 @@ def confirmed_timeout_failure(result, goal):
 def confirmed_pre_motion_failure(result, feedback):
     """로봇 상태 검사에서 끝나 측정 모션이 시작되지 않은 확정 실패인지 확인한다."""
     if (not isinstance(result, dict) or result.get('outcome') != 'FAILED'
-            or result.get('error_code') not in ('NOT_READY', 'PROFILE_MISMATCH')
+            or result.get('error_code') not in ('NOT_READY', 'PROFILE_MISMATCH', 'HOME_PATH_UNAVAILABLE')
             or result.get('stop_confirmed') is not False
             or result.get('partial') is not True
             or result.get('contact_indices') != []
-            or result.get('started_at') != {'sec': 0, 'nanosec': 0}
             or not isinstance(feedback, list) or not feedback):
         return False
     if any(not isinstance(item, dict) or item.get('completed_side_points') != 0 for item in feedback):
         return False
     stages = [item.get('stage') for item in feedback if isinstance(item, dict)]
     return ('ROBOT_CHECK' in stages and stages[-1] == 'COMPLETE'
-            and set(stages) <= {'VALIDATING', 'ROBOT_CHECK', 'COMPLETE'}
+            and set(stages) <= {'VALIDATING', 'ROBOT_CHECK', 'HOME_CHECK', 'COMPLETE'}
             and all(item.get('completed_side_points', 0) == 0
                     for item in feedback if isinstance(item, dict)))
 
@@ -248,7 +247,7 @@ class PreparationService:
         await self.reconcile_confirmed_timeout()
 
     async def reconcile_confirmed_timeout(self):
-        """저장된 최종 Result와 해시·요청을 대조해 잘못 남은 UNKNOWN만 복구한다."""
+        """저장된 최종 Result를 대조해 이동 전 실패/정지 확인 TIMEOUT의 잠금을 푼다."""
         current=self.current
         if (self.owner.transport!='ros' or not current or current.get('state')!='UNKNOWN'
                 or self.task and not self.task.done()):
@@ -267,16 +266,20 @@ class PreparationService:
             return
         raw=record.get('result') if isinstance(record,dict) else None
         if (not isinstance(record,dict) or record.get('contract')!='prepare-workpiece-result/1'
-                or not confirmed_timeout_failure(raw,goal)
-                or current.get('request_id')!=goal['request_id']):
+                or current.get('request_id')!=goal.get('request_id')):
             return
         from .ros_preparation import display_result
+        pre_motion = confirmed_pre_motion_failure(raw, current.get('feedback'))
+        timeout = confirmed_timeout_failure(raw, goal)
+        if not pre_motion and not timeout:
+            return
         current['timeout_reconciliation']=dict(previous_state=current['state'],
             previous_error_code=current.get('error_code'),previous_message=current.get('message'),
             measurement_record=deepcopy(reference),reconciled_at=now())
-        current.update(state='FAILED',binding_status='UNCONFIRMED',error_code='TIMEOUT',
+        current.update(state='FAILED',binding_status='UNCONFIRMED',error_code=raw['error_code'],
             result=display_result(raw,goal),updated_at=now(),
-            message='측정 시간 초과; 동일 요청의 제어 Result에서 실제 정지 확인. 새 측정 요청은 별도입니다.')
+            message=(raw['message'] if pre_motion else
+                     '측정 시간 초과; 동일 요청의 제어 Result에서 실제 정지 확인. 새 측정 요청은 별도입니다.'))
         await self.save()
 
     def blocks_work(self):

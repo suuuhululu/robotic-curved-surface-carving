@@ -357,10 +357,14 @@ def build_home_plan(w, initial_tip_pose, initial_joints_rad=None):
     if tcp[2]<h["overhead_z_m"] and not (top_corridor or home_corridor):
         radial=[tip[k]-center[k] for k in range(2)];distance=math.hypot(*radial)
         axis=tool_axis_in_base(tip,"-y")
-        if distance<radius or sum(-radial[k]/distance*axis[k] for k in range(2))<math.cos(h["angle_tolerance_rad"]):
-            raise MeasurementError("HOME_PATH_UNAVAILABLE","양초 내부/방향 불명 시작점: 홈으로 자동 이동하지 않음")
         outer=radius+w["outer_gap_m"]
         if distance<outer:
+            # 이미 검증된 외곽보다 멀리 이탈한 위치는 방사선 이동 없이 수직으로
+            # 상승한다. 조각 종료 자세의 작은 접선 오차를 HOME 판정 오차로
+            # 오인하지 않는다. 실제 방사선 이탈이 필요한 때만 중심 방향을 요구한다.
+            if (distance<radius or
+                    sum(-radial[k]/distance*axis[k] for k in range(2))<math.cos(h["angle_tolerance_rad"])):
+                raise MeasurementError("HOME_PATH_UNAVAILABLE","양초 내부/방향 불명 시작점: 홈으로 자동 이동하지 않음")
             escape_steps=[]
             if distance<radius+w["slow_retract_gap_m"]:
                 slow=min(outer,max(distance+w["slow_retract_gap_m"],radius+w["slow_retract_gap_m"]))
