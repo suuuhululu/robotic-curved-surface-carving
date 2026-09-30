@@ -45,6 +45,11 @@ class MeasurementError(Exception):
 
 class PointMeasurementError(MeasurementError):
     """동작 결과가 불명확한 오류와 구분하는 내부 재측정 후보. 정지/후퇴 검사는 별도."""
+    def __init__(self, code, message, outcome="FAILED", *, probe_command_sent=None):
+        super().__init__(code, message, outcome)
+        # False는 어댑터가 탐색 명령 전 실패를 확인했을 때만 지정한다.
+        # 구형/다른 백엔드의 정보 누락은 무이동 증거로 사용하지 않는다.
+        self.probe_command_sent = probe_command_sent
 
 
 class MoveRecoveryError(MeasurementError):
@@ -52,7 +57,7 @@ class MoveRecoveryError(MeasurementError):
 
     추종/도달 품질 오류만 이 형으로 올린다. 힘·제어권·통신·현장 검사 실패는
     그대로 MeasurementError 다. 복구는 정지 확인 → 현재 위치 재관측 →
-    남은 계획 전체 재검사(preflight·scene_check) → 같은 step 재실행 순서이며,
+    현재 목표 한 구간 재검사(preflight·scene_check) → 같은 step 재실행 순서이며,
     검사를 건너뛰거나 허용 오차를 넓히지 않는다.
     """
     def __init__(self, code, message, outcome="FAILED", *, evidence=None):
@@ -156,6 +161,9 @@ def _validate(workcell, profiles, context):
     move_attempts=workcell.get("move_recovery_max_attempts",1)
     if type(move_attempts) is not int or not 1 <= move_attempts <= 3:
         raise ValueError("move_recovery_max_attempts: 최초 포함 1~3회 필요")
+    exclusions=workcell.get("fit_outlier_max_exclusions",0)
+    if type(exclusions) is not int or exclusions not in (0,1):
+        raise ValueError("fit_outlier_max_exclusions: 0 또는 1 필요")
     if attempts>1 and side_contact_window(workcell) is None:
         raise ValueError("점 재측정은 분리된 baseline/접촉 구간 필요")
     if context.source_mode not in ("SIMULATION", "REAL"):
@@ -349,10 +357,14 @@ def build_home_plan(w, initial_tip_pose, initial_joints_rad=None):
     if tcp[2]<h["overhead_z_m"] and not (top_corridor or home_corridor):
         radial=[tip[k]-center[k] for k in range(2)];distance=math.hypot(*radial)
         axis=tool_axis_in_base(tip,"-y")
-        if distance<radius or sum(-radial[k]/distance*axis[k] for k in range(2))<math.cos(h["angle_tolerance_rad"]):
-            raise MeasurementError("HOME_PATH_UNAVAILABLE","양초 내부/방향 불명 시작점: 홈으로 자동 이동하지 않음")
         outer=radius+w["outer_gap_m"]
         if distance<outer:
+            # 이미 검증된 외곽보다 멀리 이탈한 위치는 방사선 이동 없이 수직으로
+            # 상승한다. 조각 종료 자세의 작은 접선 오차를 HOME 판정 오차로
+            # 오인하지 않는다. 실제 방사선 이탈이 필요한 때만 중심 방향을 요구한다.
+            if (distance<radius or
+                    sum(-radial[k]/distance*axis[k] for k in range(2))<math.cos(h["angle_tolerance_rad"])):
+                raise MeasurementError("HOME_PATH_UNAVAILABLE","양초 내부/방향 불명 시작점: 홈으로 자동 이동하지 않음")
             escape_steps=[]
             if distance<radius+w["slow_retract_gap_m"]:
                 slow=min(outer,max(distance+w["slow_retract_gap_m"],radius+w["slow_retract_gap_m"]))
@@ -435,6 +447,49 @@ def side_center_limit(w):
     return min(w["start_gap_m"],w["side_search_m"]-w["start_gap_m"])-w["max_radius_error_m"]-w["pose_tolerance_m"]
 
 
+def fit_center_limit(w, fit):
+    """8점이 실제 접촉된 뒤에는 탐색 구간 안의 실측 중심 이동을 허용한다."""
+    limit = side_center_limit(w)
+    if "side_search_m" not in w:
+        return limit
+    return min(w["start_gap_m"],w["side_search_m"]-w["start_gap_m"])-w["pose_tolerance_m"]
+
+
+def fit_is_acceptable(w, fit, samples):
+    """최종 8점과 이상점 후보의 동일한 품질·도달 범위 검사."""
+    return (fit["residual_rms_m"]<=w["max_fit_rms_m"] and
+            fit["residual_max_m"]<=w["max_fit_residual_m"] and
+            math.dist(fit["axis_xy_m"],w["seed_axis_xy_m"])<=fit_center_limit(w,fit) and
+            abs(fit["radius_m"]-w["seed_radius_m"])<=w["max_radius_error_m"] and
+            max(x[2] for x in samples)-min(x[2] for x in samples)<=w["max_point_z_spread_m"])
+
+
+def fit_measured_points(w, points):
+    """8점 기준 초과 시 가장 잘 맞는 7점 조합을 선택한다. 추가 모션 없음."""
+    if len(points)!=8:
+        raise MeasurementError("INVALID_MEASUREMENT","8점 미완료")
+    full=fit_circle(points)
+    if fit_is_acceptable(w,full,points):
+        return full,dict(fit_used_point_indices=list(range(1,9)),fit_excluded_point_indices=[])
+    if w.get("fit_outlier_max_exclusions",0)!=1:
+        raise MeasurementError("INVALID_MEASUREMENT","형상/잔차/이동 범위 조건 미충족; 추가 재측정 없음")
+    candidates=[]
+    for k in range(8):
+        others=points[:k]+points[k+1:]
+        try: candidate=fit_circle(others)
+        except ValueError: continue
+        residual=abs(math.dist(points[k][:2],candidate["axis_xy_m"])-candidate["radius_m"])
+        candidates.append((k+1,candidate,residual))
+    if not candidates:
+        raise MeasurementError("INVALID_MEASUREMENT","7점 원 계산 불가")
+    index,fit,residual=min(candidates,key=lambda item:(
+        item[1]["residual_rms_m"],item[1]["residual_max_m"],-item[2],item[0]))
+    return fit,dict(fit_used_point_indices=[i for i in range(1,9) if i!=index],
+                    fit_excluded_point_indices=[index],fit_excluded_residual_m=residual,
+                    fit_selection="BEST_LEAVE_ONE_OUT",
+                    fit_all_points=full)
+
+
 def side_contact_window(w):
     """탐색 전 baseline 모드는 전체 탐색 구간, 구형 설정은 예상 접촉 창을 반환한다."""
     enabled=w.get("side_contact_window_enabled",w.get("source_mode")=="REAL")
@@ -505,6 +560,8 @@ def measure_workpiece(adapter, workcell, profiles, context, on_progress=None):
     observed["point_attempts"]=point_attempts
     # 외부 계약. move_attempts 의 내부 tuple 키를 그대로 내보내지 않는다 (JSON 직렬화 불가).
     observed["move_recoveries"]=[]
+    # 복구 재시도 때 현재 목표 한 구간만 다시 검사한 기록. plans 는 계획 단위 preflight 만 센다.
+    observed["target_rechecks"]=[]
 
     def event(stage,status,message,point_index=0,values=None):
         item=dict(measurement_id=context.measurement_id,sequence=len(observed["events"])+1,
@@ -552,9 +609,36 @@ def measure_workpiece(adapter, workcell, profiles, context, on_progress=None):
         observed["plans"].append(dict(plan_sha256=plan_hash,checked_at=context.utc_now(),report=deepcopy(report.observed_state)))
         if not execute:
             return
-        for position,step in enumerate(steps):
+        for step in steps:
+            execute_with_recovery(step)
+
+    def recheck_target(step):
+        """복구 재시도 전, 실패한 현재 목표 한 구간만 현재 위치에서 다시 검사한다.
+
+        남은 계획 전체(steps[position:])는 다시 검사하지 않는다. 이미 검사한 목표만
+        대상이며, 검사 항목(현장 간섭·IK/FK·관절·소유권)은 기존 preflight 와 같다.
+        """
+        check()
+        single=getattr(adapter,"recheck_measurement_target",None)
+        if callable(single):
+            report=single(deepcopy(step),deepcopy(w),deepcopy(p),context)
+        else:
+            # 목표별 검사 결과를 보관하지 않는 백엔드(모의)는 한 구간 preflight 로 대신한다.
+            report=adapter.preflight_measurement([deepcopy(step)],deepcopy(w),deepcopy(p),context)
+        if not isinstance(report,StepResult) or not report.ok:
+            raise MeasurementError(getattr(report,"error_code","NOT_READY"),getattr(report,"message","재시도 목표 검사 미완료"),getattr(report,"outcome","UNKNOWN"))
+        required=("all_segments_checked","probe_envelopes_checked","ownership_confirmed","tcp_load_match")
+        if any(report.observed_state.get(k) is not True for k in required):
+            raise MeasurementError("NOT_READY","재시도 목표 검사 필수 항목 미확인")
+        observed["target_rechecks"].append(dict(label=step["label"],checked_at=context.utc_now(),
+                                                report=deepcopy(report.observed_state)))
+
+    def execute_with_recovery(step):
+        """한 step 을 실행하고, 복구 가능한 오류면 같은 목표만 제한 횟수 재시도한다 (재귀 없음)."""
+        while True:
             try:
                 execute_one(step)
+                return
             except MoveRecoveryError as exc:
                 # 추종/도달 품질 오류만 온다. 허용 오차를 넓히지 않고 다시 정렬해서 같은 step 을 재실행한다.
                 if w.get("move_recovery_max_attempts",1)==1:
@@ -570,7 +654,6 @@ def measure_workpiece(adapter, workcell, profiles, context, on_progress=None):
                 record["attempts"]=move_attempts[key];record["reasons"].append(exc.code)
                 # 접수 여부가 불명확한 명령이 남아 있을 수 있으므로 먼저 실제 정지를 확인한다.
                 confirmed_stop()
-                current=state()["tip_pose"]
                 index=_point_index_of(step["label"])
                 event(_recovery_stage(step["label"]),"RUNNING","이동 오차 복구: 정지 확인·현재 위치에서 재정렬",
                       index,dict(attempt=move_attempts[key],reason=exc.code,label=step["label"],
@@ -578,9 +661,8 @@ def measure_workpiece(adapter, workcell, profiles, context, on_progress=None):
                 if move_attempts[key]>=w["move_recovery_max_attempts"]:
                     raise MeasurementError("RECOVERY_REQUIRED",
                         f"{step['label']} 이동 {move_attempts[key]}회 복구 실패: {exc}")
-                # 현재 위치 기준으로 같은 step 부터 남은 계획을 전부 다시 검사(IK·현장)한 뒤 재실행한다.
-                run(steps[position:])
-                return
+                # 현재 위치에서 이 목표 한 구간만 다시 검사한 뒤 같은 step 을 재실행한다.
+                recheck_target(step)
             except PointMeasurementError as exc:
                 if (step["kind"]!="PROBE" or not step["point_index"] or
                         exc.outcome!="FAILED" or exc.code not in ("UNSTABLE_BASELINE","CONTACT_NOT_FOUND","CONTACT_OUT_OF_RANGE") or
@@ -597,26 +679,26 @@ def measure_workpiece(adapter, workcell, profiles, context, on_progress=None):
                         lateral>w["pose_tolerance_m"] or
                         rotation_distance(current,step["start_pose"])>w["angle_tolerance_rad"]):
                     raise MeasurementError("RECOVERY_REQUIRED","같은 점의 검사된 방사선 후퇴 범위 밖")
+                stationary_retry = (exc.code=="UNSTABLE_BASELINE"
+                    and exc.probe_command_sent is False
+                    and math.dist(current[:3],step["start_pose"][:3])<=w["pose_tolerance_m"])
                 event("SIDE_TOUCH","RUNNING",
-                      f"같은 점 재측정 전 정지 확인·시작점 복구: {exc.code}",index,
-                      dict(attempt=point_attempts[index],reason=exc.code))
-                exhausted=point_attempts[index]>=w["side_point_max_attempts"]
-                tolerance=w["pose_tolerance_m"]
-                recovery=[]
-                if travel>tolerance:
-                    # 접촉 탐색 중 안쪽에서 멈춘 경우에만 검사한 시작점으로 후퇴한다.
-                    recovery.append(_move(step["start_pose"],"retract",f"point_{index}_retract"))
-                elif travel < -tolerance and not exhausted:
-                    # 시작점 바깥은 안전한 정지 위치다. 재시도할 때만 시작점으로 접근한다.
-                    recovery.append(_move(step["start_pose"],"approach",f"point_{index}_approach"))
-                if exhausted:
-                    if recovery:
-                        run(recovery)
+                      ("정지·시작점 확인 후 기준 힘만 재수집" if stationary_retry
+                       else "같은 점 재측정 전 정지 확인·시작점 복구")+f": {exc.code}",index,
+                      dict(attempt=point_attempts[index],reason=exc.code,
+                           reason_message=str(exc),stationary_retry=stationary_retry))
+                if not stationary_retry:
+                    # 탐색했거나 무이동 증거가 없으면 검사된 방사선으로 후퇴한다.
+                    # 시작점 바깥에서 정지한 경우 안쪽으로 후퇴하지 않는다.
+                    retract_target=current if travel<0 else step["start_pose"]
+                    retract=_move(retract_target,"retract",f"point_{index}_retract")
+                    recheck_target(retract)
+                    execute_with_recovery(retract)
+                if point_attempts[index]>=w["side_point_max_attempts"]:
                     raise MeasurementError("RECOVERY_REQUIRED",f"{index}번 점 {point_attempts[index]}회 측정 실패: {exc}")
-                # 복구와 재시도를 한 계획으로 검사해 같은 시작점을 연속 명령하지 않는다.
-                # 이미 시작점 허용오차 안이면 MOVE 없이 probe가 새 baseline부터 다시 확보한다.
-                run([*recovery,*steps[position:]])
-                return
+                # 후퇴 완료는 execute_one에서 정지·시작점 도달까지 확인한다.
+                # 같은 시작점으로 0거리 approach/IK를 추가하지 않는다.
+                # 다음 PROBE가 기준 힘을 새로 확보한 뒤 검사된 탐색선으로 재접근한다.
 
     def confirmed_stop():
         stopped=adapter.stop_measurement(deepcopy(p["stop"]))
@@ -762,47 +844,12 @@ def measure_workpiece(adapter, workcell, profiles, context, on_progress=None):
         points=[h["tip_pose"][:3] for h in data["points"]]
         if len(points)!=8:
             raise MeasurementError("INVALID_MEASUREMENT","8점 미완료")
-        def acceptable(fit, samples):
-            return (fit["residual_rms_m"]<=w["max_fit_rms_m"] and fit["residual_max_m"]<=w["max_fit_residual_m"] and
-                    math.dist(fit["axis_xy_m"],w["seed_axis_xy_m"])<=side_center_limit(w) and
-                    abs(fit["radius_m"]-w["seed_radius_m"])<=w["max_radius_error_m"] and
-                    max(x[2] for x in samples)-min(x[2] for x in samples)<=w["max_point_z_spread_m"])
-
-        fit=fit_circle(points); retried_outlier=None; current_angle=w["angles_deg"][-1]
-        while not acceptable(fit,points):
-            observed["rejected_fit"]=deepcopy(fit)
-            if w.get("side_point_max_attempts",1)==1:
-                raise MeasurementError("INVALID_MEASUREMENT","형상/잔차/이동 범위 조건 미충족")
-            # 7점으로 결과를 승인하지 않는다. 유일하게 설명되는 한 점만 재취득한다.
-            candidates=[]
-            for k in range(8):
-                others=points[:k]+points[k+1:]
-                try: candidate=fit_circle(others)
-                except ValueError: continue
-                residual=abs(math.dist(points[k][:2],candidate["axis_xy_m"])-candidate["radius_m"])
-                if acceptable(candidate,others) and residual>w["max_fit_residual_m"]:
-                    candidates.append(k+1)
-            if len(candidates)!=1 or (retried_outlier is not None and candidates[0]!=retried_outlier):
-                raise MeasurementError("INVALID_MEASUREMENT","단일 이상점 식별 불가: 형상/고정 상태 재확인 필요")
-            index=candidates[0]; retried_outlier=index
-            if point_attempts[index]>=w["side_point_max_attempts"]:
-                raise MeasurementError("RECOVERY_REQUIRED",f"{index}번 점 재측정 한도 후에도 원 맞춤 불일치")
-            confirmed_stop()
-            event("FIT","RUNNING","단일 이상점만 재측정",index,dict(attempt=point_attempts[index]+1))
-            # 마지막 측정의 외곽 위치에서 검증된 원주 경유. 내부 직선 횡단 금지.
-            angle=w["angles_deg"][index-1];z=reference_z-w["side_depth_m"]
-            outer=w["seed_radius_m"]+w["outer_gap_m"]
-            expected=facing_pose(w["seed_axis_xy_m"],outer,z,current_angle)
-            actual=state()["tip_pose"]
-            if math.dist(actual[:3],expected[:3])>w["pose_tolerance_m"] or rotation_distance(actual,expected)>w["angle_tolerance_rad"]:
-                raise MeasurementError("RECOVERY_REQUIRED","이상점 재측정 전 외곽 도착 미확인")
-            count=max(1,math.ceil(abs(angle-current_angle)/w["orbit_step_deg"]))
-            route=[_move(facing_pose(w["seed_axis_xy_m"],outer,z,current_angle+(angle-current_angle)*k/count),"travel","orbit") for k in range(1,count+1)]
-            prefix=f"point_{index}_"
-            route.extend(step for step in build_side_plan(w,reference_z) if step["label"].startswith(prefix))
-            run(route);current_angle=angle
-            points=[h["tip_pose"][:3] for h in data["points"]]
-            fit=fit_circle(points)
+        fit,fit_details=fit_measured_points(w,points)
+        data.update(fit_details)
+        excluded=fit_details["fit_excluded_point_indices"]
+        fit_message=(f"8점 원본 보존; {excluded[0]}번 이상점 제외, 7점으로 중심·반지름 계산; 추가 재측정 없음"
+                     if excluded else "8점으로 중심·반지름 계산 완료")
+        event("FIT","SUCCEEDED",fit_message,values=deepcopy(fit_details))
         return_start=state()
         observed["home_return_start"]=deepcopy(return_start)
         event("HOME_RETURN","RUNNING","측정 완료: 검사한 경로로 상공 홈에 복귀합니다")
@@ -827,7 +874,7 @@ def measure_workpiece(adapter, workcell, profiles, context, on_progress=None):
         data["work_v_origin"]="TOP";data["work_v_positive_direction"]="DOWN"
         observed.update(partial=False,stop_confirmed=True)
         event("COMPLETE","SUCCEEDED","좌표 계산·홈 복귀 완료: 양초 측정 완료",values=deepcopy(data))
-        return StepResult("SUCCEEDED",completed_step="workpiece_calibration",observed_state=observed)
+        return StepResult("SUCCEEDED",message=fit_message,completed_step="workpiece_calibration",observed_state=observed)
     except Exception as exc:
         fallback = ("COMMUNICATION_LOST" if isinstance(exc,ConnectionError) else
                     "TIMEOUT" if isinstance(exc,TimeoutError) else

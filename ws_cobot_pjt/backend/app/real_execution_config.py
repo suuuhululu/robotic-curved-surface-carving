@@ -60,6 +60,13 @@ def validate_real_execution_config(config):
             raise ValueError('REAL 이동 프로파일 누락: ' + name)
         for key in ('vel_mm_s', 'acc_mm_s2', 'pos_tol_mm', 'completion_timeout_s'):
             positive(motion.get(key), 'motion_profiles.' + name + '.' + key)
+        response_timeout = motion.get('command_response_timeout_s')
+        if 'command_response_timeout_s' in motion:
+            positive(response_timeout, 'motion_profiles.' + name + '.command_response_timeout_s')
+            if response_timeout > motion['completion_timeout_s']:
+                raise ValueError(
+                    'motion_profiles.' + name
+                    + '.command_response_timeout_s는 completion_timeout_s 이하여야 합니다.')
     stop = context['stop_profile']
     if type(stop.get('mode')) is not int:
         raise ValueError('stop_profile.mode 정수 설정 누락')

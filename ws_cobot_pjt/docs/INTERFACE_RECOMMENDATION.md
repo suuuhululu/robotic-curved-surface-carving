@@ -1,6 +1,6 @@
 # 새김 ROS·파일 인터페이스 기준 · 고정 드릴 v2
 
-기준: `main` `987a3b7` (2026-09-25, PR #90 병합). 이 문서는 현재 코드의 통신·단위·실행 게이트를 읽기 위한 안내다. 발표·교차 검토용 전체 표는 [Interface Specification](INTERFACE_SPECIFICATION.md)을 사용한다. **필드·자료형의 원본은 같은 커밋의 [`c2_interfaces`](../ws_cobot1/src/c2_interfaces/README.md) `.action`·`.srv`·`.msg` 파일**이며, 이 표로 별도 타입을 만들지 않는다. ROS 2 Jazzy와 M0609를 기준으로 한다. 이력은 날짜별 [일지](daily/)와 [9/19 운영 결정](C2_FIXED_DRILL_20260919.md)에 보존한다.
+기준: PR #99 head `3d882f6` (2026-09-30, `main_v11` 통합). 이 문서는 현재 코드의 통신·단위·실행 게이트를 읽기 위한 안내다. 발표·교차 검토용 전체 표는 [Interface Specification](INTERFACE_SPECIFICATION.md)을 사용한다. **필드·자료형의 원본은 같은 커밋의 [`c2_interfaces`](../ws_cobot1/src/c2_interfaces/README.md) `.action`·`.srv`·`.msg` 파일**이며, 이 표로 별도 타입을 만들지 않는다. ROS 2 Jazzy와 M0609를 기준으로 한다. 이력은 날짜별 [일지](daily/)와 [9/19 운영 결정](C2_FIXED_DRILL_20260919.md)에 보존한다.
 
 ## 1. 통신 경계
 
@@ -35,9 +35,9 @@
 
 `PrepareWorkpiece.Goal`은 `operation`, 요청/준비/측정 ID, 모드, 입력 설정 ID/해시를 갖는다. `BIND_SNAPSHOT`에는 추가로 측정 원본 ID/해시와 최종 스냅샷 ID/해시가 필요하다. `MEASURE`에서는 이 네 결과 참조를 비워 둔다.
 
-- `MEASURE`: 공정은 최신 상태·제어권·정지 래치·모션 소유권과 설정을 확인한다. 필요 시 검사된 홈 이동·정지/도착 재관측을 거쳐 윗면과 옆면 8점을 접촉 측정하고 정상 후퇴·홈을 확인한다. #75의 REAL 옆면 접촉 구간 검사는 baseline과 접촉 후보를 분리하며, `side_point_max_attempts`는 최초 포함 1~3회다. 복구 가능한 한 점 오류만 정지 확인·검사된 후퇴 후 재시도하고 힘 한계·통신/정지 미확인은 재시도하지 않는다. 결과는 `outcome`, `stop_confirmed`, `partial`, `geometry_ready`, `validity`, 측정 위치/반지름/작업 범위/접촉 원본을 담는다. 높이는 운영자 자 측정, 수직 축은 가정이며 `ESTIMATED`를 독립 정밀도 검증으로 읽지 않는다. `absolute_top_verification_known`과 `absolute_top_verified`를 원본 그대로 전달한다.
+- `MEASURE`: 공정은 최신 상태·제어권·정지 래치·모션 소유권과 설정을 확인한다. 필요 시 검사된 홈 이동·정지/도착 재관측을 거쳐 윗면과 옆면 8점을 접촉 측정하고 정상 후퇴·홈을 확인한다. 탐색 명령 전 `UNSTABLE_BASELINE`은 PROBE 명령 미전송과 시작점 유지가 확인될 때 이동·IK 재검사 없이 기준선만 다시 수집한다. 실제 탐색 뒤 `CONTACT_NOT_FOUND`·`CONTACT_OUT_OF_RANGE`만 정지 확인·검사된 방사선 후퇴 뒤 같은 점을 `side_point_max_attempts` 한도에서 재시도한다. 힘 한계·통신 상실·보호정지·정지 미확인은 재시도하지 않는다. 8점 전체 fit이 실패하면 최대 한 점을 제외한 7점 중 기존 잔차·반지름·중심 조건을 통과하는 유일한 해만 사용하며 FIT 단계에서 로봇을 다시 움직이지 않는다. 결과는 `outcome`, `stop_confirmed`, `partial`, `geometry_ready`, `validity`, 측정 위치/반지름/작업 범위/접촉 원본을 담는다. 높이는 운영자 자 측정, 수직 축은 가정이며 `ESTIMATED`를 독립 정밀도 검증으로 읽지 않는다. `absolute_top_verification_known`과 `absolute_top_verified`를 원본 그대로 전달한다.
 - 서버는 성공 결과를 원본 파일에 저장하고 측정값·출처·가정·도구/가공 설정을 새 불변 스냅샷에 조립한다. 유효한 REAL 실행 설정이 없거나 잘못되면 측정은 진행할 수 있지만 **미리보기 전용** 스냅샷만 만들고 BIND·조각은 진행하지 않는다. 측정 설정과 실행 설정은 작업자 JSON 업로드가 아닌 배포 설정이다.
-- `BIND_SNAPSHOT`: 공정은 저장 원본이 자신의 직전 성공 측정 Result와 같은지, 준비/측정 ID·설정 ID/해시·기하·신뢰도·도구/TCP/load가 맞는지 검사한다. 이 작업은 로봇을 움직이지 않는다. 성공한 `snapshot_bound=true`는 **연결 확인**이며 경로 실행 승인이나 측정 정확도 증명이 아니다. 다른 내용으로 기존 BIND를 덮어쓰지 않는다.
+- `BIND_SNAPSHOT`: 공정은 저장 원본이 자신의 직전 성공 측정 Result와 같은지, 준비/측정 ID·설정 ID/해시·기하·신뢰도·도구/TCP/load가 맞는지 검사한다. 이 작업은 로봇을 움직이지 않는다. 성공한 `snapshot_bound=true`는 **연결 확인**이며 경로 실행 승인이나 측정 정확도 증명이 아니다. 다른 내용으로 기존 BIND를 덮어쓰지 않는다. BIND는 현재 공정 프로세스의 측정·상태·제어권에 묶이며 관측 무효화나 프로세스 재시작 뒤 저장 파일만으로 자동 복구하지 않는다.
 - REAL HMI는 기동 및 준비 직전에 제어기를 **읽기 전용** 조회해 `c2-hardware-observation/1`을 파일로 저장한다. 현재 TCP/load, AUTO/REAL·STANDBY/정지, 관절·TCP 등을 확인한다. 고정 설비, 그리퍼/드릴 체결, 드릴 OFF, 이동 경로, 지속 감시는 자동 조회 불가 항목으로 준비 화면에서 사람이 한 번 확인한다. 이 수동 확인은 PrepareWorkpiece ROS Goal의 센서 bool이 아니며, 드릴 ON 화면 체크와도 다르다. REAL 실행 전에는 준비 시 확인과 저장된 관측 파일의 무결성을 다시 대조한다.
 
 ## 4. GeneratePath와 경로 파일
@@ -60,7 +60,7 @@ REAL 경로 서버도 로봇을 움직이지 않는다. `ESTIMATED`·`absolute_t
 
 HMI는 최신 상태, 준비 성공과 BIND, 동일 스냅샷·경로·미리보기, 파일 해시, REAL 후보 표시를 대조한다. 공정 노드는 모드·경로/설정 원본 바이트, 도구·프레임·상태·제어권, 정지 래치, 실행 설정을 다시 검사한다. 깊이·접근·이탈을 적용한 실행계획의 **모든 명시 waypoint**에 IK·관절 한계·J6 여유 검사를 수행하고, 검사한 계획과 실행 계획을 연결한다. 점 사이 연속 충돌·특이점 전체 보증이나 힘 유지 중 실제 위치의 IK 연속 증명은 아직 아니다.
 
-REAL 또는 승인된 `entry_planning.enabled=true`의 준비 후 실행 경로는 `PRECHECK → ENTRY → ENGRAVE → RETURN_HOME → FINISH`다. entry 비활성 호환 흐름에서는 `ENTRY`와 `RETURN_HOME` 콜백이 생략될 수 있다. `PRECHECK`는 배포 실행 프로파일의 `execution_context.entry_planning`과 이번 측정 스냅샷의 기하를 결합해 현재/HOME에서 첫 APPROACH까지의 후보와 조각 후 HOME 복귀 후보를 읽기 전용 IK와 관절·간격 검사로 각각 확정하고 해시로 고정한다. `ENTRY`와 `RETURN_HOME`은 각자 검사된 계획만 실행한다. 정책의 높이는 실측 `top_z_m`에 대한 상대 여유이므로 양초의 절대 표면 좌표를 고정하지 않는다. 기존 직접 실행 호환 경로에는 `TOOL_CHECK`, `APPROACH`, `RETRACT` 단계도 남아 있으므로 두 호출 경로를 혼동하지 않는다. #74의 `normal_force_hold`·`chunk_adaptive` CUT과 검사형 HOME 복귀 코드는 설정이 있을 때만 사용되며 실제 힘 유지 중 MoveSX 수락, 연속 도달성, 전체 HOME 복귀 실기는 별도 검증 대상이다. 정상 성공 경로의 검사된 복귀와 실패·보호정지·정지 미확인 뒤 자동 복귀 금지를 구분한다. 세부 범위는 [공정 README](../ws_cobot1/src/c2_process/README.md)를 따른다.
+REAL 또는 승인된 `entry_planning.enabled=true`의 준비 후 실행 경로는 `PRECHECK → ENTRY → ENGRAVE → RETRACT → FINISH`다. `PRECHECK`는 배포 실행 프로파일의 `execution_context.entry_planning`과 이번 측정 스냅샷의 기하를 결합해 현재/HOME에서 첫 APPROACH까지의 후보를 확정하고, 깊이·접근·이탈이 반영된 본 실행계획 전체를 읽기 전용 IK와 관절 검사로 고정한다. 정상 종료 때 좌표 노드 경로의 마지막 `RETRACT`로 표면 법선 바깥 방향의 오프셋 원통까지만 이탈한다. 별도 HOME 복귀 후보 생성·검사·실행은 하지 않는다. 정책의 높이는 실측 `top_z_m`에 대한 상대 여유이므로 양초의 절대 표면 좌표를 고정하지 않는다. 기존 직접 실행 호환 경로에는 `TOOL_CHECK`, `APPROACH`, `RETRACT` 단계도 남아 있으므로 두 호출 경로를 혼동하지 않는다. #74의 `normal_force_hold`·`chunk_adaptive` CUT은 설정이 있을 때만 사용되며 실제 힘 유지 중 MoveSX 수락과 연속 도달성은 별도 검증 대상이다. 실패·보호정지·정지 미확인 뒤에는 추가 이탈이나 자동 복귀를 수행하지 않는다. 세부 범위는 [공정 README](../ws_cobot1/src/c2_process/README.md)를 따른다.
 
 결과 `outcome`은 `SUCCEEDED/FAILED/STOPPED/UNKNOWN`; 진행률·마지막 구간·로그 ID는 실물 가공 품질이 아니다. 동일 `request_id`의 같은 내용은 재실행하지 않고 다른 내용은 충돌로 거절한다. 통신·모션 결과가 미확인되면 성공으로 바꾸거나 새 경로/작업을 자동 시작하지 않는다.
 

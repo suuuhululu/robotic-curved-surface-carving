@@ -63,6 +63,12 @@ class StopInput(Input):
     reason: str = Field(default='운영자 정지 요청', min_length=1, max_length=300)
 
 
+class RestartFromBeginningInput(Input):
+    schema_version: Literal[2] = 2
+    request_id: UUID
+    operator_confirmed_restart: Literal[True]
+
+
 class InspectionInput(Input):
     run_id: UUID
     verdict: Literal['PASS', 'HOLD', 'REJECT']

@@ -8,7 +8,6 @@ import type {
   WorkAreaPolicy,
 } from "./api";
 import {
-  cutPathCount,
   cutStrokes,
   cylinderPoint,
   previewSegments,
@@ -397,10 +396,6 @@ export function UnwrappedPreview({
                   ? "첨부 이미지의 중심선 경로 · 기하 검증 완료 · 실기 미검증"
                   : "모의 중심선 샘플 · 첨부 이미지의 실제 변환 결과가 아닙니다."}
             </b>
-            <span>
-              조각 경로 {cutPathCount(result)}개 · 전체 실행 구간{" "}
-              {result.segment_count}개
-            </span>
           </>
         ) : (
           <>

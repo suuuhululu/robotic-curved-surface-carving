@@ -118,11 +118,12 @@ def test_motion_during_measurement_not_treated_as_initial_shift():
     assert r.observed_state['stop_confirmed']
 
 
-def test_one_bad_point_fails_circle_residual():
+def test_one_bad_point_is_excluded_from_fit_without_remeasurement():
     r,io,logs,c=run_case(scenario='outlier')
-    assert not r.ok and r.error_code=='RECOVERY_REQUIRED',(r.error_code,r.message)
-    assert r.observed_state['point_attempts'][4]==3
-    assert r.observed_state['rejected_fit']['residual_max_m']>c['workcell']['max_fit_residual_m']
+    assert r.ok,(r.error_code,r.message)
+    assert r.observed_state['point_attempts'][4]==1
+    assert r.observed_state['measurement']['fit_excluded_point_indices']==[4]
+    assert r.observed_state['measurement']['residual_max_m']<=c['workcell']['max_fit_residual_m']
 
 
 def test_large_baseline_is_not_zeroed_out():

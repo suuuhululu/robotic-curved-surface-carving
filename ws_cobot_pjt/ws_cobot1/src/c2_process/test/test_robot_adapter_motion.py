@@ -145,6 +145,22 @@ def test_lost_ack_requests_stop_without_resend(setup):
     assert r.outcome == 'UNKNOWN' and len(calls) == len(stops) == 1
 
 
+def test_motion_service_uses_profile_command_response_timeout(setup):
+    ad, clock, calls = setup
+    target = [10., 0., 0., 0., 0., 0.]
+    samples(ad, [(ZERO, 1, 0), (target, 2, 2), (target, 1, 0)])
+    timeouts = []
+    def call(endpoint, kind, request, timeout=5.):
+        calls.append((endpoint, request))
+        timeouts.append(timeout)
+        return SimpleNamespace(success=True)
+    ad._call = call
+    profile = dict(PROFILE, command_response_timeout_s=5.)
+    result = ad.move(posx_to_pose(target), 'c2_base', profile, 30., None)
+    assert result.ok
+    assert timeouts == [5.]
+
+
 @pytest.mark.parametrize('motion', [1, 2])
 def test_busy_robot_does_not_receive_next_motion(setup, motion):
     ad, clock, calls = setup

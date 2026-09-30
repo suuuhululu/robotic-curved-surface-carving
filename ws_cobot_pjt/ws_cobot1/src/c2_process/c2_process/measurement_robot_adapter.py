@@ -190,16 +190,23 @@ def check_measurement_scene(steps,w,initial):
         for i in range(n+1):
             native=interpolate(prev,target,i/n);tcp=[x/1000 for x in native[:3]]
             tip=posx_to_pose(native,offset);label=step['label']
-            if any(not a<=v<=b for v,a,b in zip(tcp,scene['tcp_min_m'],scene['tcp_max_m'])):
-                raise MeasurementError('SCENE_REJECTED','검사한 작업대 범위 밖')
             if tool_axis_in_base(tip,'+z')[2]>-math.cos(math.radians(scene['upright_tolerance_deg'])):
                 raise MeasurementError('SCENE_REJECTED','그리퍼 수직 자세 범위 초과')
-            if min(tcp[2],tip[2])>=scene['overhead_clearance_z_m']:
-                count+=1;continue
             dx,dy=tcp[0]-tip[0],tcp[1]-tip[1];den=dx*dx+dy*dy
             t=max(0,min(1,((center[0]-tip[0])*dx+(center[1]-tip[1])*dy)/den)) if den else 0
             gap=math.hypot(tip[0]+t*dx-center[0],tip[1]+t*dy-center[1])-radius
             minimum=min(minimum,gap)
+            xy_in_bounds=all(a<=v<=b for v,a,b in zip(tcp[:2],scene['tcp_min_m'][:2],scene['tcp_max_m'][:2]))
+            z_in_bounds=scene['tcp_min_m'][2]<=tcp[2]<=scene['tcp_max_m'][2]
+            # 조각 허용 높이에서 끝난 뒤 첫 준비를 시작할 수 있어야 한다.
+            # 낮은 Z 예외는 이미 원통 외곽 여유가 확보된 HOME 수직 상승에만 둔다.
+            low_outer_home_lift=(label=='home_lift' and tcp[2]<scene['tcp_min_m'][2]
+                                 and tcp[2]>=w['top']['expected_tcp_z_range_m'][0]-w['height_m']
+                                 and gap>=scene['outer_min_gap_m'])
+            if not xy_in_bounds or (not z_in_bounds and not low_outer_home_lift):
+                raise MeasurementError('SCENE_REJECTED','검사한 작업대 범위 밖')
+            if min(tcp[2],tip[2])>=scene['overhead_clearance_z_m']:
+                count+=1;continue
             if label.startswith('home_'):
                 h=w['home'];at_home=math.dist(tcp[:2],h['tcp_pose'][:2])<=h['corridor_xy_tolerance_m']
                 at_top=math.dist(tcp[:2],center)<=h['corridor_xy_tolerance_m']
@@ -421,43 +428,101 @@ class GuardedMeasurementAdapter:
         for step in steps:
             target=continuous_target(step['target_pose'],self.offset,prev)
             self.native_targets[tuple(step['target_pose'])]=target[:]
-            n,indices=ik_sample_indices(prev,target,step,workcell,self.g)
-            metrics['dense_samples']+=n
-            metrics['skipped_air_samples']+=n-len(indices)
-            for i in indices:
-                timed('readiness',self._ready,context)
-                if self.clock()>=deadline:raise MeasurementError('TIMEOUT','측정 이동 사전 검사 시간 초과')
-                point=interpolate(prev,target,i/n)
-                ik_key=(self.space,tuple(point))
-                if ik_key in ik_cache:
-                    raw=ik_cache[ik_key]
-                    metrics['ik_cache_hits']+=1
-                else:
-                    raw=tuple(vector(timed('ik',self.io.ik,point,self.space),6,'IK joints'))
-                    ik_cache[ik_key]=raw
-                # 같은 IK 결과도 직전 관절에 맞춘 회전수·연속성 검사는 다시 수행.
-                nxt=list(raw)
-                for axis in (0,3,5):nxt[axis]+=360*round((q[axis]-nxt[axis])/360)
-                self._joint_guard(nxt)
-                if max(abs(a-b) for a,b in zip(q,nxt))>self.g['max_joint_step_deg']:
-                    raise MeasurementError('IK_DISCONTINUITY','IK 해 불연속')
-                fk_key=(tuple(point),tuple(nxt))
-                if fk_key in fk_cache:
-                    fk=fk_cache[fk_key]
-                    metrics['fk_cache_hits']+=1
-                else:
-                    fk=tuple(vector(timed('fk',self.io.fk,nxt),6,'FK pose'))
-                    fk_cache[fk_key]=fk
-                if math.dist(fk[:3],point[:3])>self.g['fk_position_mm'] or rotation_distance(posx_to_pose(fk),posx_to_pose(point))>math.radians(self.g['fk_angle_deg']):
-                    raise MeasurementError('IK_FK_MISMATCH','IK/FK 대조 실패')
-                q=nxt;count+=1;metrics['samples']=count
-                self._emit_trace("ik_sample",dict(label=step["label"],sample=count,native_tcp=point,joints_deg=q))
+            q,count=self._check_segment(prev,target,step,workcell,context,q,count,deadline,metrics,timed,ik_cache,fk_cache)
             self.expected[tuple(step['target_pose'])]=q[:];prev=target
         timed('readiness',self._ready,context)
         return StepResult('SUCCEEDED',observed_state=dict(all_segments_checked=True,probe_envelopes_checked=True,
             ownership_confirmed=True,tcp_load_match=True,
             validation_level='SAMPLED_CONTROLLER_IK_FK_AND_EXTERNAL_SCENE_CHECK',sample_count=count,
             scene_record=scene,full_continuous_collision_checked=False))
+
+    def _check_segment(self,prev,target,step,workcell,context,q,count,deadline,metrics,timed,ik_cache,fk_cache):
+        """한 구간의 보간 표본을 제어기 IK/FK 로 검사하고 (끝 관절, 누적 표본 수)를 돌려준다."""
+        n,indices=ik_sample_indices(prev,target,step,workcell,self.g)
+        metrics['dense_samples']+=n
+        metrics['skipped_air_samples']+=n-len(indices)
+        for i in indices:
+            timed('readiness',self._ready,context)
+            if self.clock()>=deadline:raise MeasurementError('TIMEOUT','측정 이동 사전 검사 시간 초과')
+            point=interpolate(prev,target,i/n)
+            ik_key=(self.space,tuple(point))
+            if ik_key in ik_cache:
+                raw=ik_cache[ik_key]
+                metrics['ik_cache_hits']+=1
+            else:
+                raw=tuple(vector(timed('ik',self.io.ik,point,self.space),6,'IK joints'))
+                ik_cache[ik_key]=raw
+            # 같은 IK 결과도 직전 관절에 맞춘 회전수·연속성 검사는 다시 수행.
+            nxt=list(raw)
+            for axis in (0,3,5):nxt[axis]+=360*round((q[axis]-nxt[axis])/360)
+            self._joint_guard(nxt)
+            if max(abs(a-b) for a,b in zip(q,nxt))>self.g['max_joint_step_deg']:
+                raise MeasurementError('IK_DISCONTINUITY','IK 해 불연속')
+            fk_key=(tuple(point),tuple(nxt))
+            if fk_key in fk_cache:
+                fk=fk_cache[fk_key]
+                metrics['fk_cache_hits']+=1
+            else:
+                fk=tuple(vector(timed('fk',self.io.fk,nxt),6,'FK pose'))
+                fk_cache[fk_key]=fk
+            if math.dist(fk[:3],point[:3])>self.g['fk_position_mm'] or rotation_distance(posx_to_pose(fk),posx_to_pose(point))>math.radians(self.g['fk_angle_deg']):
+                raise MeasurementError('IK_FK_MISMATCH','IK/FK 대조 실패')
+            q=nxt;count+=1;metrics['samples']=count
+            self._emit_trace("ik_sample",dict(label=step["label"],sample=count,native_tcp=point,joints_deg=q))
+        return q,count
+
+    def recheck_measurement_target(self,step,workcell,profiles,context):
+        """복구 재시도용. 현재 위치에서 이미 검사한 목표 한 구간만 다시 검사한다.
+
+        남은 계획은 검사하지 않고 기존 검사 결과(expected/native_targets)도 지우지 않는다.
+        새 목표는 받지 않는다. 검사 항목은 preflight 의 구간 검사와 같다.
+        """
+        key=tuple(step['target_pose'])
+        if key not in self.expected or key not in self.native_targets:
+            raise MeasurementError('NOT_READY','사전 검사하지 않은 목표는 재시도 검사 대상이 아님')
+        if step['kind']!='MOVE':
+            raise MeasurementError('NOT_READY','재시도 검사는 이동 구간만 대상')
+        metrics=dict(measurement_id=context.measurement_id,segments=1,label=step['label'],
+                     samples=0,dense_samples=0,skipped_air_samples=0,
+                     ik_cache_hits=0,fk_cache_hits=0,calls={},seconds={})
+        self.last_recheck_metrics=metrics
+        started=time.perf_counter()
+        def timed(name, function, *args):
+            began=time.perf_counter()
+            metrics['calls'][name]=metrics['calls'].get(name,0)+1
+            try:return function(*args)
+            finally:metrics['seconds'][name]=metrics['seconds'].get(name,0.)+time.perf_counter()-began
+        try:
+            timed('readiness',self._ready,context)
+            if self.offset!=workcell['tool_offset_m']:
+                raise MeasurementError('PROFILE_MISMATCH','어댑터/측정 설정 도구 오프셋 불일치')
+            deadline=self.clock()+min(self.g['preflight_timeout_s'],workcell['runtime_timeout_s'])
+            initial=timed('observation',self._read);q=initial['joints_deg'];self._joint_guard(q)
+            if initial['robot_state']!=1 or initial['motion_status']!=0:
+                raise MeasurementError('NOT_READY','재시도 검사 시작 시 정지 미확인')
+            scene=timed('scene',self.scene_check,[step],workcell,initial)
+            if scene.get('path_checked') is not True or scene.get('probe_envelopes_checked') is not True:
+                raise MeasurementError('NOT_READY','재시도 구간의 현장 간섭 검사 미완료')
+            q,count=self._check_segment(initial['posx'],self.native_targets[key],step,workcell,context,
+                                        q,0,deadline,metrics,timed,{},{})
+            # 도착 판정은 처음 검사한 관절 해를 기준으로 하므로 같은 해에 도달해야 한다.
+            if max(abs(a-b) for a,b in zip(q,self.expected[key]))>self.g['completion_joint_deg']:
+                raise MeasurementError('IK_DISCONTINUITY','재시도 구간의 끝 관절이 처음 검사한 해와 다름')
+            timed('readiness',self._ready,context)
+            metrics['outcome']='SUCCEEDED'
+            return StepResult('SUCCEEDED',observed_state=dict(all_segments_checked=True,probe_envelopes_checked=True,
+                ownership_confirmed=True,tcp_load_match=True,
+                validation_level='SINGLE_TARGET_RECHECK_IK_FK_AND_SCENE',sample_count=count,
+                scene_record=scene,full_continuous_collision_checked=False))
+        except Exception as exc:
+            metrics['outcome']=getattr(exc,'outcome','FAILED')
+            metrics['error_code']=getattr(exc,'code',type(exc).__name__)
+            raise
+        finally:
+            metrics['elapsed_s']=time.perf_counter()-started
+            node=getattr(self.io,'node',None)
+            logger=node.get_logger() if node is not None else logging.getLogger(__name__)
+            logger.info('measurement_target_recheck '+json.dumps(metrics,sort_keys=True))
 
     NONCONTACT_SUFFIXES=('_retract','_outer')
 
@@ -614,6 +679,56 @@ class GuardedMeasurementAdapter:
             if any(not low+margin<=v<=high-margin for v,low,high in zip(tcp,scene['tcp_min_m'],scene['tcp_max_m'])):return strict
         return limit
 
+    def _probe_stationary_baseline(self,step,profile,context,deadline,start):
+        """PROBE 전용: 정지 상태의 기준 힘을 확보한다. TRANSIT(MOVE)에서는 호출하지 않는다.
+
+        반환 (bias, 기준 확보 시점의 도구 끝 자세, 마지막 관측).
+        """
+        if math.dist(start[:3],step['start_pose'][:3])>self.workcell['pose_tolerance_m']:
+            raise MeasurementError('NOT_READY','접촉 시작 위치 불일치')
+        samples=collections.deque();stable_start=self.clock();settle_anchor=start[:]
+        while True:
+            o=self._read();self._check(o,profile,context,deadline,step);now=self.clock()
+            if o['motion_status']!=0:
+                raise MeasurementError('UNSTABLE_BASELINE','기준 힘 측정 중 실제 이동 상태')
+            if (math.dist(o['tip_pose'][:3],step['start_pose'][:3])>self.workcell['pose_tolerance_m'] or
+                rotation_distance(o['tip_pose'],step['start_pose'])>self.workcell['angle_tolerance_rad']):
+                raise MeasurementError('UNSTABLE_BASELINE','기준 힘 수집 중 검사한 시작 위치/자세 이탈')
+            if math.dist(o['tip_pose'][:3],settle_anchor[:3])>self.g['baseline_position_m']:
+                # 정지 상태의 작은 정착 변화는 창을 다시 수집한다. 전체 10초 제한은 유지.
+                samples.clear();settle_anchor=o['tip_pose'][:]
+                self._emit_trace('baseline_resettle',dict(label=step['label'],tip_pose=settle_anchor))
+            desired=o.get('desired_posx')
+            if desired is not None:
+                # 힘이 안정돼도 직전 이동의 서보 정착이 끝나지 않았을 수 있다.
+                # 기준 힘 수집의 정착 허용폭은 이동 생략 기준과 분리한다.
+                # 설정이 없으면 종전 기준을 사용한다. 힘 안정성/창 길이는 유지.
+                vector(desired,6,'desired_posx')
+                tracking_m=math.dist(o['posx'][:3],desired[:3])/1000.
+                tracking_angle=rotation_distance(o['tip_pose'],posx_to_pose(desired,self.offset))
+                tracking_limit=self.g.get('baseline_tracking_position_m',self.g['skip_position_m'])
+                if tracking_m>tracking_limit or tracking_angle>math.radians(self.g['skip_angle_deg']):
+                    samples.clear()
+                    if now-stable_start>=self.g['baseline_timeout_s']:
+                        raise PointMeasurementError('UNSTABLE_BASELINE','기준 힘 수집 전 실제/지시 TCP 정착 미확인',
+                                                    probe_command_sent=False)
+                    self.sleep(self.g['poll_s'])
+                    continue
+            along=sum(a*b for a,b in zip(step['direction'],o['force_n']))
+            samples.append((now,along))
+            while samples and now-samples[0][0]>profile['baseline_window_s']+self.g['baseline_window_slack_s']:samples.popleft()
+            if now-samples[0][0]>=profile['baseline_window_s']:
+                values=[v for _,v in samples];bias=statistics.median(values)
+                half=len(values)//2
+                if half and statistics.median(abs(v-bias) for v in values)<=self.g['stationary_mad_n'] and abs(statistics.median(values[:half])-statistics.median(values[half:]))<=self.g['baseline_drift_n']:
+                    start=o['tip_pose'][:]
+                    self._emit_trace('stationary_baseline',dict(label=step['label'],bias_n=bias,settle_s=now-stable_start,
+                        tracking_limit_m=self.g.get('baseline_tracking_position_m',self.g['skip_position_m'])))
+                    return bias,start,o
+            if now-stable_start>=self.g['baseline_timeout_s']:
+                raise PointMeasurementError('UNSTABLE_BASELINE','기준 힘 안정화 실패',probe_command_sent=False)
+            self.sleep(self.g['poll_s'])
+
     def execute_measurement_step(self,step,profile,context,timeout_s):
         deadline=self.clock()+min(profile['timeout_s'],timeout_s)
         o=self._read();self._check(o,profile,context,deadline,step)
@@ -633,48 +748,9 @@ class GuardedMeasurementAdapter:
                 raise MeasurementError('PROFILE_MISMATCH','검사한 baseline 위치와 실행 모드 불일치')
 
         if probe:
-            if math.dist(start[:3],step['start_pose'][:3])>self.workcell['pose_tolerance_m']:
-                raise MeasurementError('NOT_READY','접촉 시작 위치 불일치')
-            samples=collections.deque();stable_start=self.clock();settle_anchor=start[:]
-            while True:
-                o=self._read();self._check(o,profile,context,deadline,step);now=self.clock()
-                if o['motion_status']!=0:
-                    raise MeasurementError('UNSTABLE_BASELINE','기준 힘 측정 중 실제 이동 상태')
-                if (math.dist(o['tip_pose'][:3],step['start_pose'][:3])>self.workcell['pose_tolerance_m'] or
-                    rotation_distance(o['tip_pose'],step['start_pose'])>self.workcell['angle_tolerance_rad']):
-                    raise MeasurementError('UNSTABLE_BASELINE','기준 힘 수집 중 검사한 시작 위치/자세 이탈')
-                if math.dist(o['tip_pose'][:3],settle_anchor[:3])>self.g['baseline_position_m']:
-                    # 정지 상태의 작은 정착 변화는 창을 다시 수집한다. 전체 10초 제한은 유지.
-                    samples.clear();settle_anchor=o['tip_pose'][:]
-                    self._emit_trace('baseline_resettle',dict(label=step['label'],tip_pose=settle_anchor))
-                desired=o.get('desired_posx')
-                if desired is not None:
-                    # 힘이 안정돼도 직전 이동의 서보 정착이 끝나지 않았을 수 있다.
-                    # 기준 힘 수집의 정착 허용폭은 이동 생략 기준과 분리한다.
-                    # 설정이 없으면 종전 기준을 사용한다. 힘 안정성/창 길이는 유지.
-                    vector(desired,6,'desired_posx')
-                    tracking_m=math.dist(o['posx'][:3],desired[:3])/1000.
-                    tracking_angle=rotation_distance(o['tip_pose'],posx_to_pose(desired,self.offset))
-                    tracking_limit=self.g.get('baseline_tracking_position_m',self.g['skip_position_m'])
-                    if tracking_m>tracking_limit or tracking_angle>math.radians(self.g['skip_angle_deg']):
-                        samples.clear()
-                        if now-stable_start>=self.g['baseline_timeout_s']:
-                            raise PointMeasurementError('UNSTABLE_BASELINE','기준 힘 수집 전 실제/지시 TCP 정착 미확인')
-                        self.sleep(self.g['poll_s'])
-                        continue
-                along=sum(a*b for a,b in zip(step['direction'],o['force_n']))
-                samples.append((now,along))
-                while samples and now-samples[0][0]>profile['baseline_window_s']+self.g['baseline_window_slack_s']:samples.popleft()
-                if now-samples[0][0]>=profile['baseline_window_s']:
-                    values=[v for _,v in samples];bias=statistics.median(values)
-                    half=len(values)//2
-                    if half and statistics.median(abs(v-bias) for v in values)<=self.g['stationary_mad_n'] and abs(statistics.median(values[:half])-statistics.median(values[half:]))<=self.g['baseline_drift_n']:
-                        start=o['tip_pose'][:]
-                        self._emit_trace('stationary_baseline',dict(label=step['label'],bias_n=bias,settle_s=now-stable_start,
-                            tracking_limit_m=self.g.get('baseline_tracking_position_m',self.g['skip_position_m'])))
-                        break
-                if now-stable_start>=self.g['baseline_timeout_s']:raise PointMeasurementError('UNSTABLE_BASELINE','기준 힘 안정화 실패')
-                self.sleep(self.g['poll_s'])
+            # PROBE = 정밀 힘 측정. 기준 힘·접촉 판정은 이 분기에서만 수행한다.
+            bias,start,o=self._probe_stationary_baseline(step,profile,context,deadline,start)
+        # TRANSIT = 좌표 이동. 기준 힘/접촉 판정 없이 안전 감시(_check)와 도달 확인만 한다.
         elif math.dist(start[:3],target[:3])<=self.g['skip_position_m'] and rotation_distance(start,target)<=math.radians(self.g['skip_angle_deg']) and max(abs(a-b) for a,b in zip(o['joints_deg'],self.expected[tuple(target)]))<=self.g['completion_joint_deg']:
             return StepResult('SUCCEEDED',observed_state={'stop_confirmed':True})
         start_native=o['posx'][:]

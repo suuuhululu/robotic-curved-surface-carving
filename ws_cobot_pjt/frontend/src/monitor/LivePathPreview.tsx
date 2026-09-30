@@ -1,6 +1,11 @@
 import { useRef, useState } from "react";
 import type { PathResult, Profile, Run, SegmentObservation } from "./api";
-import { cutStrokes, cylinderPoint, pathProgressStates } from "./preview";
+import {
+  cutPathCount,
+  cutStrokes,
+  cylinderPoint,
+  pathProgressStates,
+} from "./preview";
 
 const styles = {
   PENDING: { color: "#292f2c", label: "가공 예정", dash: undefined },
@@ -12,7 +17,7 @@ const styles = {
 };
 
 const progressStyles = {
-  PENDING: { ...styles.PENDING, label: "미완료" },
+  PENDING: { ...styles.PENDING, label: "미완료 선분" },
   IN_PROGRESS: styles.IN_PROGRESS,
   COMPLETED: styles.COMPLETED,
   UNKNOWN: { ...styles.UNKNOWN, label: "진행 미확인" },
@@ -145,6 +150,12 @@ export default function LivePathPreview({
           );
         })}
       </div>
+      {path && (
+        <p className="field-help">
+          조각 경로 <b>{cutPathCount(path)}</b>개 · 전체 실행 구간{" "}
+          <b>{path.segment_count}</b>개
+        </p>
+      )}
       {!pathMatchesRun && (
         <p className="field-help">
           실행 경로와 진행 데이터의 연결을 확인하는 중입니다.

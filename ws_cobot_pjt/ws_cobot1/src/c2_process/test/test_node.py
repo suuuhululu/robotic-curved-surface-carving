@@ -1027,6 +1027,14 @@ def test_binding_invalidation_is_deferred_only_during_active_precheck():
     assert not defer_prepared_binding_invalidation("RUNNING", "PRECHECK", None)
 
 
+def test_binding_invalidation_is_bounded_while_observer_recovers():
+    from types import SimpleNamespace as NS
+    recovering = NS(defer_binding_invalidation=lambda: True)
+    expired = NS(defer_binding_invalidation=lambda: False)
+    assert defer_prepared_binding_invalidation("IDLE", "PRECHECK", None, recovering)
+    assert not defer_prepared_binding_invalidation("IDLE", "PRECHECK", None, expired)
+
+
 @pytest.mark.parametrize('state_code', [3, 5, 6, 9, 10])
 def test_prepared_binding_observation_rejects_confirmed_stop_states(state_code):
     from types import SimpleNamespace as NS
@@ -1159,7 +1167,7 @@ def test_coordinator_reuses_precheck_observation_without_extra_driver_queries():
 
 def test_ros_callbacks_publish_cached_signals_and_alarm_events(monkeypatch):
     from types import SimpleNamespace as NS
-    from c2_process.node import create_ros_node
+    from c2_process.node import StopDecision, create_ros_node
     class Packet:
         def __init__(self, **kwargs): self.__dict__.update(kwargs)
     class State(Packet):
@@ -1230,6 +1238,53 @@ def test_ros_callbacks_publish_cached_signals_and_alarm_events(monkeypatch):
     assert '[0.261, -0.031, 0.138]' in node.event_pub.sent[-2].message
     assert '외 1개 후보' in node.event_pub.sent[-2].message
     assert all(e.profile_snapshot_id == 's' and e.profile_sha256 == 'sh' for e in node.event_pub.sent)
+
+    # 서비스 접수 응답은 유실됐지만 QSTOP 뒤 실제 정지가 확인된 경우다.
+    # 실행 결과 UNKNOWN은 유지하면서 ProcessState에는 정지 확인을 전달한다.
+    invalidated = []
+    node.preparation = NS(invalidate=lambda: invalidated.append(True))
+    node.coordinator.execute = lambda *a, **k: StepResult(
+        'UNKNOWN', 'COMMUNICATION_LOST', '명령 접수 응답 미확인',
+        observed_state={'stop_confirmed': True,
+                        'last_completed_segment_id': 'seg-0121',
+                        'engraving_progress': .41})
+    terminal=[]
+    request=NS(schema_version=2,request_id='request',run_id='run',
+               source_mode='SIMULATION',path_id='path',path_version=1,
+               path_sha256='a'*64)
+    handle=NS(request=request,publish_feedback=lambda _:None,
+              succeed=lambda:terminal.append('succeed'),
+              abort=lambda:terminal.append('abort'),
+              canceled=lambda:terminal.append('canceled'))
+    output=node.execute_goal(handle)
+    assert output.outcome=='UNKNOWN' and output.error_code=='COMMUNICATION_LOST'
+    assert output.last_completed_segment_id=='seg-0121'
+    assert node.status=='UNKNOWN' and node.stop_state=='CONFIRMED'
+    assert terminal==['abort']
+    node.publish_state()
+    assert node.state_pub.sent[-1].status=='UNKNOWN'
+    assert node.state_pub.sent[-1].stop_state=='CONFIRMED'
+    assert invalidated == []
+
+    # 정지 접수만으로 BIND를 지우지 않는다. 실행 종료에서 실제 정지를
+    # 확인하지 못한 경우에만 준비 연결을 무효화한다.
+    node.coordinator.stop = lambda _: StopDecision(True, 'ACCEPTED', 'NONE', '정지 요청 접수')
+    stop_response = NS()
+    node.stop_request(NS(schema_version=2, request_id='stop', run_id='run'), stop_response)
+    assert stop_response.accepted is True and invalidated == []
+    node.coordinator.execute = lambda *a, **k: StepResult(
+        'UNKNOWN', 'STOP_UNCONFIRMED', '실제 정지 미확인',
+        observed_state={'stop_confirmed': False})
+    second_terminal = []
+    second_request = NS(schema_version=2, request_id='request-2', run_id='run-2',
+                        source_mode='SIMULATION', path_id='path', path_version=1,
+                        path_sha256='b' * 64)
+    second_handle = NS(request=second_request, publish_feedback=lambda _: None,
+                       succeed=lambda: second_terminal.append('succeed'),
+                       abort=lambda: second_terminal.append('abort'),
+                       canceled=lambda: second_terminal.append('canceled'))
+    node.execute_goal(second_handle)
+    assert invalidated == [True] and second_terminal == ['abort']
 
     made = []
     real = object.__new__(DoosanRobotAdapter)
@@ -2549,10 +2604,33 @@ def test_real_controller_initialization_runs_only_after_status_and_profile_check
 
     calls.clear()
     adapter._read_tool_tcp = lambda: (calls.append("profiles") or ("wrong", "ToolWeight_1"))
+    adapter.select_tool_profile = lambda *args, **kwargs: (
+        calls.append("select") or StepResult("FAILED", "PROFILE_MISMATCH"))
     result = check_preparation_status(
         adapter, inputs.evidence, settings, initialize_controller=initialize)
     assert result.error_code == "PROFILE_MISMATCH"
-    assert calls == ["profiles"]
+    assert calls == ["profiles", "select"]
+
+
+def test_real_preparation_applies_registered_profiles_before_initialization():
+    from c2_process.node import check_preparation_status
+    _, inputs, adapter = real_fixture()
+    settings = {"tcp_profile_id": "GripperDA_v1", "load_profile_id": "ToolWeight_1"}
+    calls = []
+    adapter._read_tool_tcp = lambda: (calls.append("profiles") or ("", ""))
+    adapter.select_tool_profile = lambda *args, **kwargs: (
+        calls.append("select") or StepResult(
+            "SUCCEEDED", "NONE", observed_state={
+                "tcp": "GripperDA_v1", "tool": "ToolWeight_1", "applied": True}))
+
+    def initialize():
+        calls.append("initialize")
+        return StepResult("SUCCEEDED", "NONE", observed_state={"singularity_mode": 0})
+
+    result = check_preparation_status(
+        adapter, inputs.evidence, settings, initialize_controller=initialize)
+    assert result.ok
+    assert calls == ["profiles", "select", "initialize"]
 
 
 def test_preparation_rejects_mock_for_real_without_observation():
@@ -2589,6 +2667,18 @@ def _prepare_and_bind(coordinator, inputs, ctx, settings, kwargs):
     assert coordinator.bind_preparation_snapshot(ctx.run_id, config["profile_snapshot_id"],
                                                  config["profile_sha256"]).ok
     return result
+
+
+def test_confirmed_stop_unknown_does_not_latch_future_motion_block():
+    goal, inputs, ctx, settings, kwargs = _preparation_flow_fixture()
+    kwargs['measure'] = lambda a, c: StepResult(
+        'UNKNOWN', 'COMMUNICATION_LOST', '접수 응답 미확인',
+        observed_state={'stop_confirmed': True})
+    coordinator = ProcessCoordinator(lambda _: inputs)
+    result = coordinator.prepare(
+        ctx.run_id, ctx, inputs.adapter, inputs.evidence, settings, **kwargs)
+    assert result.outcome == 'UNKNOWN' and result.observed_state['stop_confirmed'] is True
+    assert coordinator._motion_uncertain is False
 
 
 @pytest.mark.parametrize("explicit_preparation_id", [True, False])
@@ -2682,13 +2772,12 @@ def test_prepared_execution_needs_only_bound_tool_offset_not_full_tip_verificati
     assert calls == ["joints", "engrave"]
 
 
-def test_prepared_execution_plans_checks_and_runs_entry_before_engraving():
+def test_prepared_execution_runs_entry_and_ends_after_path_retract():
     goal, inputs, ctx, settings, kwargs = _preparation_flow_fixture()
     workcell = dict(inputs.workcell, entry_planning={"enabled": True})
     inputs = replace(inputs, workcell=workcell)
     calls, phases = [], []
     plan = {"entry_plan_sha256": "entry-sha", "targets": [[1.0] * 7]}
-    return_plan = {"return_home_plan_sha256": "return-sha", "targets": [[2.0] * 7]}
 
     def plan_entry(path, received_workcell, adapter, state, offset, limits, margin,
                    profiles, **_kwargs):
@@ -2702,16 +2791,8 @@ def test_prepared_execution_plans_checks_and_runs_entry_before_engraving():
         calls.append("joints")
         return StepResult("SUCCEEDED")
 
-    def plan_return(execution_plan, received_workcell, adapter, state, offset,
-                    limits, margin, profiles, **kwargs):
-        calls.append("return_plan")
-        assert execution_plan["inspection_scope"]
-        assert received_workcell["entry_planning"]["enabled"] is True
-        assert adapter is inputs.adapter and state.quality == "VALID"
-        assert kwargs["entry_plan"] == plan
-        return StepResult("SUCCEEDED", observed_state={
-            "return_home_plan": return_plan,
-            "return_home_plan_sha256": "return-sha"})
+    def forbidden_return_home(*_args, **_kwargs):
+        raise AssertionError("별도 HOME 복귀 계획·실행을 호출하면 안 됨")
 
     def enter(received, adapter, context):
         calls.append("entry")
@@ -2726,25 +2807,19 @@ def test_prepared_execution_plans_checks_and_runs_entry_before_engraving():
             "engraving_progress": 1.0,
         })
 
-    def return_home(received, adapter, context):
-        calls.append("return_home")
-        assert received == return_plan and adapter is inputs.adapter
-        assert context.checked_plan_signature
-        return StepResult("SUCCEEDED", observed_state={
-            "return_home_plan_sha256": "return-sha"})
-
     coordinator = ProcessCoordinator(
         lambda _: inputs, preparation_required=True, joint_check_fn=joints,
         entry_plan_fn=plan_entry, entry_execute_fn=enter, engrave_fn=engrave,
-        return_home_plan_fn=plan_return, return_home_execute_fn=return_home)
+        return_home_plan_fn=forbidden_return_home,
+        return_home_execute_fn=forbidden_return_home)
     _prepare_and_bind(coordinator, inputs, ctx, settings, kwargs)
 
     result = coordinator.execute(goal, preparation_id=ctx.run_id,
                                  on_phase=phases.append)
 
     assert result.ok, result
-    assert calls == ["entry_plan", "joints", "return_plan", "entry", "engrave", "return_home"]
-    assert phases == ["PRECHECK", "ENTRY", "ENGRAVE", "RETURN_HOME", "FINISH"]
+    assert calls == ["entry_plan", "joints", "entry", "engrave"]
+    assert phases == ["PRECHECK", "ENTRY", "ENGRAVE", "FINISH"]
     assert result.observed_state["preparation_id"] == ctx.run_id
     assert result.observed_state["last_completed_segment_id"] == "retract-1"
     assert result.observed_state["engraving_progress"] == 1.0

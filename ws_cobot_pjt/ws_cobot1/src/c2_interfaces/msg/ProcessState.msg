@@ -16,8 +16,8 @@ string path_id
 uint32 path_version
 # IDLE, RUNNING, STOPPING, STOPPED, SUCCEEDED, FAILED, UNKNOWN
 string status "UNKNOWN"
-# REAL 또는 승인된 entry 활성 prepared: PRECHECK, ENTRY, ENGRAVE, RETURN_HOME, FINISH.
-# entry 비활성 호환 흐름에서는 ENTRY와 RETURN_HOME이 생략될 수 있다.
+# REAL 또는 승인된 entry 활성 prepared: PRECHECK, ENTRY, ENGRAVE, RETRACT, FINISH.
+# RETRACT는 본 경로의 마지막 표면 이탈이며, entry 비활성 호환 흐름에서는 ENTRY가 생략될 수 있다.
 # 호환 실행 경로에서는 TOOL_CHECK, APPROACH, RETRACT가 추가로 보일 수 있다.
 # TOOL_CHECK는 저장된 보정 확인이다. 새 보정값으로 실행 경로를 바꾸지 않는다.
 string phase

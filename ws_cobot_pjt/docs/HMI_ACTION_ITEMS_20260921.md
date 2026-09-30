@@ -1,5 +1,10 @@
 # 수현 작업 목록 · 사전 검사·수동 드릴 확인
 
+> **역사적 작업 목록:** 2026-09-21 당시의 미완료 체크리스트다. 현재는
+> `PrepareWorkpiece`의 MEASURE/BIND, 서버 저장, 경로 생성과 별도 실행 요청이
+> 연결돼 있다. 구현 상태는 [진행 현황](../../docs/REVIEW_STATUS.md), 현재 계약은
+> [인터페이스](INTERFACE_RECOMMENDATION.md)를 따른다.
+
 2026-09-21 사용자 결정. 기준 main `829db40`, 작업 브랜치 `codex/hmi-preparation-flow`.
 이 문서는 구현할 작업 목록이다. 이번 문서 수정으로 코드·공통 타입·실기 검증이 완료된 것은 아니다.
 세은님 전달용 원본은 [공정 연결 인수인계](PROCESS_HANDOFF_20260921.md)다.

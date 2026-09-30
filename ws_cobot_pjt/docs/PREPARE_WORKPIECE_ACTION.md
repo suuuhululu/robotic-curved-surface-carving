@@ -59,7 +59,16 @@ Action 파일: [PrepareWorkpiece.action](../ws_cobot1/src/c2_interfaces/action/P
 - `contact_received_at`은 원본 측정의 `received_at` UTC Unix 시각이다. `contact_monotonic_s`는 원본 `measured_at_monotonic_s`; 다른 PC/프로세스 시각과 비교하지 않는다. `started_at`/`measured_at`은 측정 시작/완료 UTC다. 미확인 Time=0을 현재 시각으로 꾸미지 않는다.
 - SIM 성공의 `validity=SIMULATED`, REAL은 유효한 절대 기하를 확인한 경우에만 `FORCE_CONTACT_ESTIMATE`. `REFERENCE_ONLY`/`INCOMPLETE`는 경로 생성 불가다. `independent_accuracy_verified=false`를 임의로 true로 만들지 않는다.
 - `height_m`은 설정의 수동 높이, `axis_xy_m`/`radius_m`/`top_z_m`은 유효한 접촉에서 계산한다. `bottom_z_m=top_z_m-height_m`. `work_v_range_m=[상단 여유, 높이-하단 여유]`는 윗면에서 아래 방향 거리, `work_z_range_m=[top_z-v_max, top_z-v_min]`는 절대 z다.
-- 현 단계는 수직축 가정(`vertical_axis_assumed=true`, `tilt_measured=false`), 정밀 기울기/테이퍼 측정 완료가 아니다. 잔차는 원본 fit의 RMS/max 값을 반환한다.
+- 현 단계는 수직축 가정(`vertical_axis_assumed=true`, `tilt_measured=false`), 정밀 기울기/테이퍼 측정 완료가 아니다. 잔차는 채택한 fit의 RMS/max 값을 반환한다.
+- 2026-09-29 사용자 요청에 따른 로컬 측정 정책: 입력 `workcell.fit_outlier_max_exclusions=1`이면
+  8점 원 맞춤이 기준을 넘으면 1점씩 제외한 후보 중 잔차가 가장 작은 7점 조합을 채택한다(기본값 0).
+  후보 유일성이나 추가 잔차·반지름·중심 조건으로 결과를 다시 차단하지 않는다. FIT 단계에서 재측정 모션은 생성하지 않는다.
+  `contact_*`에는 제외점도 포함한 원본 9접촉(윗면 1+옆면 8)을 유지하며,
+  `message`에 제외 번호·계산 사용 개수와 원본 보존을 명시한다. 계산용 점 번호와 제외점 잔차는
+  공정 내부 measurement에도 보존한다. ROS v2 필드·타입은 변경하지 않으며 기존 서버는
+  원본·message를 저장하고, BIND/경로는 채택한 중심·반지름을 그대로 사용한다.
+  변경 대상은 공정 측정 함수·현장 입력 설정·계약 문서·관련 시험이다.
+  배포 시 공정 노드와 HMI의 입력 설정을 함께 갱신한다. 실제 정밀도 검증 완료를 뜻하지 않는다.
 - 실패 시 숫자 기본 0은 실측 0이 아니다. `geometry_ready=false`이면 접촉 배열만 부분 데이터로 사용하고 기하 필드는 사용하지 않는다. 성공 결과의 모든 수치·배열·범위·quat 정규화·최신성은 송수신 양쪽에서 검사한다.
 
 ## 5. HMI 저장 → BIND → 기존 경로/실행

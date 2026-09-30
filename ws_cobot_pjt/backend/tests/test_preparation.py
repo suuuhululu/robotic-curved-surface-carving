@@ -291,6 +291,22 @@ def test_only_confirmed_robot_check_failure_can_unlock_repreparation():
         result, feedback[:-1]+[dict(stage='TOP_TOUCH',completed_side_points=0)])
 
 
+def test_home_plan_rejection_before_motion_can_unlock_repreparation():
+    result=dict(outcome='FAILED', error_code='HOME_PATH_UNAVAILABLE',
+                message='홈 경로 사전 검사 실패', stop_confirmed=False,
+                partial=True, contact_indices=[],
+                started_at={'sec':1790727613,'nanosec':458204031})
+    feedback=[
+        dict(stage='VALIDATING',completed_side_points=0),
+        dict(stage='ROBOT_CHECK',completed_side_points=0),
+        dict(stage='HOME_CHECK',completed_side_points=0),
+        dict(stage='COMPLETE',completed_side_points=0),
+    ]
+    assert confirmed_pre_motion_failure(result, feedback)
+    assert not confirmed_pre_motion_failure(
+        result, feedback[:-1]+[dict(stage='HOME_MOVE',completed_side_points=0), feedback[-1]])
+
+
 def test_process_binding_rejection_enables_new_preparation():
     saved=[]
     owner=SimpleNamespace(store=SimpleNamespace())

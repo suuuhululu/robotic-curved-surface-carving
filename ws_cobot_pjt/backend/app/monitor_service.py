@@ -18,6 +18,17 @@ class DomainError(Exception):
         super().__init__(message)
 
 
+def restart_stationary_confirmed(payload):
+    """새 모션 없는 UNKNOWN 종료에 필요한 현재 정지 관측만 검사한다."""
+    observation=payload.get('observation') if isinstance(payload,dict) else None
+    if not isinstance(observation,dict):return False
+    return bool(
+        observation.get('robot_state')==1
+        and observation.get('motion_status')==0
+        and observation.get('robot_mode')==1
+        and observation.get('robot_system')==0)
+
+
 class MonitorService:
     def __init__(self,store,transport='mock',tick=.4,*,mode='SIMULATION'):
         if mode not in ('SIMULATION', 'REAL') or mode == 'REAL' and transport != 'ros':
@@ -122,6 +133,15 @@ class MonitorService:
                         self.run.update(status='UNKNOWN',error_code='COMMUNICATION_LOST',message='공정 노드 재시작. 실행 결과 미확인')
                         self.record(self.store.save_run,dict(self.run))
             self.state=data;self.last_state=time.monotonic();self.contract_error=None
+            # 공정 결과 UNKNOWN 래치는 해제하지 않는다. 다만 같은 실행에서 뒤늦게
+            # 도착한 실제 정지 확인은 운영자가 현재 상태를 판단할 수 있게 보존한다.
+            if (self.run and data.get('run_id')==self.run['run_id']
+                    and self.run.get('status')=='UNKNOWN'
+                    and data.get('status')=='UNKNOWN'
+                    and data.get('stop_state')=='CONFIRMED'
+                    and self.run.get('stop_state')!='CONFIRMED'):
+                self.run['stop_state']='CONFIRMED'
+                self.record(self.store.save_run,dict(self.run))
             if self.run and data.get('run_id')==self.run['run_id'] and self.run['status'] in ('ACCEPTED','RUNNING','STOPPING'):
                 stopping = self.run.get('stop_state', 'NONE') != 'NONE'
                 for key in ['phase','engraving_progress','elapsed_s','stop_state']:
@@ -409,6 +429,38 @@ class MonitorService:
         self.record(self.store.save_run,dict(self.run))
         await self.notice(response['message'],code=response['error_code'])
         return response
+
+    async def restart_from_beginning(self,rid,body):
+        """미확인 실행을 모션 없이 종료하고 새 준비만 허용한다."""
+        async with self.lock:
+            if not self.run or self.run.get('run_id')!=rid:
+                raise DomainError('RUN_MISMATCH','대상 실행이 현재 실행과 다릅니다.')
+            if (self.run.get('resolution')=='RESTART_FROM_BEGINNING'
+                    and self.run.get('resolution_request_id')==body['request_id']):
+                return dict(self.run)
+            if self.run.get('status')!='UNKNOWN':
+                raise DomainError('NOT_READY','미확인 실행만 처음부터 다시 준비할 수 있습니다.')
+            if rid in self.pending_run_ids:
+                raise DomainError('NOT_READY','실행 Result를 아직 수신 중입니다. 잠시 후 다시 확인하세요.')
+            if not self.fresh():
+                raise DomainError('STALE_DATA','최신 공정 상태가 없어 실행을 해제할 수 없습니다.')
+            inspection=await self.preparation.refresh_hardware_inspection()
+            payload=(inspection or {}).get('payload',{})
+            if not restart_stationary_confirmed(payload):
+                errors='; '.join(payload.get('errors') or []) or '읽기 전용 로봇 상태 미확인'
+                raise DomainError('NOT_READY','STANDBY·실제 정지 확인 실패: '+errors)
+            await self.preparation.invalidate_process_binding(
+                '이전 실행 결과 미확인 후 STANDBY·실제 정지를 다시 확인함')
+            previous=self.run.get('message','')
+            self.run.update(
+                status='FAILED',stop_state='CONFIRMED',
+                resolution='RESTART_FROM_BEGINNING',
+                resolution_request_id=body['request_id'],resolved_at=now(),
+                message=(previous+' · ' if previous else '')
+                        +'현재 STANDBY·실제 정지 확인. 기존 경로를 재실행하지 않고 새 준비부터 시작합니다.')
+            await asyncio.to_thread(self.store.save_run,dict(self.run))
+            await self.notice('미확인 실행 종료 · 새 준비 필요',code=self.run.get('error_code','UNKNOWN'))
+            return dict(self.run)
 
     async def watch_stop(self,rid):
         deadline=time.monotonic()+self.stop_confirmation_timeout

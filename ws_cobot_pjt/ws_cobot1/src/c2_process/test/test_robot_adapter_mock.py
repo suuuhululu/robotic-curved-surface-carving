@@ -3,11 +3,30 @@
 import os
 import sys
 import threading
+import math
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from c2_process.robot_adapter import MockRobotAdapter, pose_to_posx, posx_to_pose, tool_axis_in_base  # noqa: E402
+from c2_process.robot_adapter import (  # noqa: E402
+    MockRobotAdapter, command_response_timeout, pose_to_posx, posx_to_pose,
+    tool_axis_in_base)
 
 PROFILE = dict(id="travel", vel_mm_s=26.0, acc_mm_s2=50.0, completion_timeout_s=30.0)
+
+
+def test_command_response_timeout_is_separate_and_bounded_by_motion_deadline():
+    assert command_response_timeout(PROFILE, 30.0) == 2.0
+    assert command_response_timeout(
+        dict(PROFILE, command_response_timeout_s=5.0), 30.0) == 5.0
+    assert command_response_timeout(
+        dict(PROFILE, command_response_timeout_s=5.0), 1.25) == 1.25
+
+
+@pytest.mark.parametrize("value", [None, 0, -1, True, math.nan, math.inf])
+def test_command_response_timeout_rejects_invalid_explicit_value(value):
+    with pytest.raises(ValueError, match="명령 접수 응답"):
+        command_response_timeout(
+            dict(PROFILE, command_response_timeout_s=value), 30.0)
 
 
 def test_unit_roundtrip():

@@ -13,21 +13,33 @@ from .storage import digest, encoded
 ACTIVE = {'ACCEPTED', 'RUNNING', 'CANCELING', 'UNKNOWN'}
 
 
+def confirmed_timeout_failure(result, goal):
+    """같은 MEASURE 요청의 제어기 최종 TIMEOUT·정지 확인만 확정 실패로 인정한다."""
+    keys=('request_id','preparation_id','measurement_id','operation','source_mode',
+          'input_profile_snapshot_id','input_profile_sha256')
+    return (isinstance(result,dict) and isinstance(goal,dict)
+            and goal.get('operation')=='MEASURE'
+            and goal.get('source_mode') in ('REAL','SIMULATION')
+            and result.get('outcome')=='FAILED' and result.get('error_code')=='TIMEOUT'
+            and result.get('stop_confirmed') is True and result.get('geometry_ready') is False
+            and result.get('snapshot_bound') is False
+            and all(isinstance(goal.get(k),str) and goal[k] and result.get(k)==goal[k] for k in keys))
+
+
 def confirmed_pre_motion_failure(result, feedback):
     """로봇 상태 검사에서 끝나 측정 모션이 시작되지 않은 확정 실패인지 확인한다."""
     if (not isinstance(result, dict) or result.get('outcome') != 'FAILED'
-            or result.get('error_code') not in ('NOT_READY', 'PROFILE_MISMATCH')
+            or result.get('error_code') not in ('NOT_READY', 'PROFILE_MISMATCH', 'HOME_PATH_UNAVAILABLE')
             or result.get('stop_confirmed') is not False
             or result.get('partial') is not True
             or result.get('contact_indices') != []
-            or result.get('started_at') != {'sec': 0, 'nanosec': 0}
             or not isinstance(feedback, list) or not feedback):
         return False
     if any(not isinstance(item, dict) or item.get('completed_side_points') != 0 for item in feedback):
         return False
     stages = [item.get('stage') for item in feedback if isinstance(item, dict)]
     return ('ROBOT_CHECK' in stages and stages[-1] == 'COMPLETE'
-            and set(stages) <= {'VALIDATING', 'ROBOT_CHECK', 'COMPLETE'}
+            and set(stages) <= {'VALIDATING', 'ROBOT_CHECK', 'HOME_CHECK', 'COMPLETE'}
             and all(item.get('completed_side_points', 0) == 0
                     for item in feedback if isinstance(item, dict)))
 
@@ -232,6 +244,43 @@ class PreparationService:
             self.config = await asyncio.to_thread(input_config, self.owner.store, base)
             self.timeout_s = self.config['payload']['workcell']['runtime_timeout_s']
             self.current = await asyncio.to_thread(self.owner.store.recover_preparation)
+        await self.reconcile_confirmed_timeout()
+
+    async def reconcile_confirmed_timeout(self):
+        """저장된 최종 Result를 대조해 이동 전 실패/정지 확인 TIMEOUT의 잠금을 푼다."""
+        current=self.current
+        if (self.owner.transport!='ros' or not current or current.get('state')!='UNKNOWN'
+                or self.task and not self.task.done()):
+            return
+        reference=current.get('measurement_record') or {}
+        goal=current.get('action_goal') or {}
+        if (not isinstance(reference,dict) or not isinstance(reference.get('id'),str)
+                or not reference['id'] or not isinstance(reference.get('sha256'),str)
+                or len(reference['sha256'])!=64
+                or any(c not in '0123456789abcdef' for c in reference['sha256'])):
+            return
+        try:
+            data=await asyncio.to_thread(self.owner.store.read_asset,reference['id'],reference['sha256'])
+            record=json.loads(data)
+        except (KeyError,ValueError,TypeError,OSError):
+            return
+        raw=record.get('result') if isinstance(record,dict) else None
+        if (not isinstance(record,dict) or record.get('contract')!='prepare-workpiece-result/1'
+                or current.get('request_id')!=goal.get('request_id')):
+            return
+        from .ros_preparation import display_result
+        pre_motion = confirmed_pre_motion_failure(raw, current.get('feedback'))
+        timeout = confirmed_timeout_failure(raw, goal)
+        if not pre_motion and not timeout:
+            return
+        current['timeout_reconciliation']=dict(previous_state=current['state'],
+            previous_error_code=current.get('error_code'),previous_message=current.get('message'),
+            measurement_record=deepcopy(reference),reconciled_at=now())
+        current.update(state='FAILED',binding_status='UNCONFIRMED',error_code=raw['error_code'],
+            result=display_result(raw,goal),updated_at=now(),
+            message=(raw['message'] if pre_motion else
+                     '측정 시간 초과; 동일 요청의 제어 Result에서 실제 정지 확인. 새 측정 요청은 별도입니다.'))
+        await self.save()
 
     def blocks_work(self):
         return bool(self.task and not self.task.done() or self.current and self.current['state'] in ACTIVE)
@@ -323,7 +372,7 @@ class PreparationService:
             await asyncio.to_thread(self.owner.store.save_preparation, deepcopy(self.current))
 
     async def begin(self, body):
-        from .monitor_service import DomainError
+        from .monitor_service import DomainError, restart_stationary_confirmed
         o = self.owner
         async with o.lock:
             if not self.snapshot()['supported']:
@@ -340,7 +389,8 @@ class PreparationService:
                     raise DomainError(
                         'NOT_READY', '고정 설비·그리퍼/드릴 장착·드릴 OFF·주변 경로·작업자 감시를 확인하세요.')
                 inspection = await self.refresh_hardware_inspection()
-                if inspection['payload']['state'] != 'READY':
+                if (inspection['payload']['state'] != 'READY'
+                        and not restart_stationary_confirmed(inspection['payload'])):
                     message = '; '.join(inspection['payload']['errors']) or '하드웨어 관측 미확인'
                     raise DomainError('NOT_READY', '읽기 전용 하드웨어 검사 실패: ' + message)
             if not o.fresh() or o.storage_error:
@@ -534,7 +584,8 @@ class PreparationService:
                 self.current.update(state='FAILED', binding_status='UNCONFIRMED',
                                     error_code=raw['error_code'], message=raw['message'])
             elif (not o.fresh() or raw.get('stop_confirmed') is not True
-                    or cancel.is_set() and raw['outcome'] != 'STOPPED'):
+                    or cancel.is_set() and raw['outcome'] != 'STOPPED'
+                    and not confirmed_timeout_failure(raw,active_goal)):
                 self.current.update(state='UNKNOWN', binding_status='UNCONFIRMED', error_code='STOP_UNCONFIRMED',
                                     message='취소·연결 상실 또는 정지 미확인. 다음 작업을 차단합니다.')
             elif raw['outcome'] != 'SUCCEEDED':

@@ -260,7 +260,10 @@ class RosBridge:
         if values['request_id'] in self.generation_cancels:
             handle.cancel_goal_async()
         try:
-            result=await await_ros(handle.get_result_async(),None if client is self.generate_client else 3600)
+            # Action 전체 시간은 경로 크기와 공정별 제한에 따라 달라진다. 게이트웨이가
+            # 별도의 고정 상한으로 정상 실행을 취소하지 않고, 최종 Result 또는 명시적
+            # 사용자 취소를 기다린다. 개별 모션·측정의 제한시간은 각 공정 노드가 소유한다.
+            result=await await_ros(handle.get_result_async(),None)
             return dict(ros_wire_values(result.result) if wire_result else self.convert(result.result))
         except (asyncio.CancelledError,asyncio.TimeoutError):
             handle.cancel_goal_async()  # 수락을 정지 확인으로 간주하지 않는다.

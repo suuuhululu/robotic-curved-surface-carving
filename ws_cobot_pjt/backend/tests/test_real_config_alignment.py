@@ -81,6 +81,29 @@ def test_position_tolerance_rejected_before_measure_by_both(tmp_path, name, bad)
         validate_real_execution_profiles(context)
 
 
+@pytest.mark.parametrize('name', ['candle_approach', 'candle_cut', 'candle_travel', 'candle_retract'])
+@pytest.mark.parametrize('bad', [None, 0, -1, True, float('nan'), float('inf')])
+def test_command_response_timeout_rejected_by_both(tmp_path, name, bad):
+    value = config(tmp_path)
+    context = value['execution_profile']['execution_context']
+    context['motion_profiles'][name]['command_response_timeout_s'] = bad
+    with pytest.raises(ValueError, match='command_response_timeout_s'):
+        validate_real_execution_config(value)
+    with pytest.raises(InputsUnavailable, match='command_response_timeout_s'):
+        validate_real_execution_profiles(context)
+
+
+def test_command_response_timeout_cannot_exceed_motion_completion(tmp_path):
+    value = config(tmp_path)
+    context = value['execution_profile']['execution_context']
+    motion = context['motion_profiles']['candle_cut']
+    motion['command_response_timeout_s'] = motion['completion_timeout_s'] + 0.1
+    with pytest.raises(ValueError, match='command_response_timeout_s'):
+        validate_real_execution_config(value)
+    with pytest.raises(InputsUnavailable, match='command_response_timeout_s'):
+        validate_real_execution_profiles(context)
+
+
 @pytest.mark.parametrize('bad', [-.001, None, True, float('inf')])
 def test_invalid_depth_rejected_by_both(tmp_path, bad):
     value = config(tmp_path)

@@ -39,6 +39,17 @@ def test_side_near_surface_retracts_before_lifting():
     assert check_trial_scene(p,w,dict(posx=tcp))['path_checked']
 
 
+def test_completed_engraving_outer_pose_can_return_home():
+    """9/30 실제 조각 종료 관측: 낮은 Z·외곽 위치의 작은 접선 오차는 수직 상승 가능."""
+    w=json.loads((ROOT/'config/workpiece_real_trial_0921.json').read_text())['workcell']
+    native=[585.5202026367188,-34.56525421142578,175.71322631835938,
+            60.828643798828125,179.9999237060547,161.6211395263672]
+    p=build_home_plan(w,posx_to_pose(native,w['tool_offset_m']))
+    assert p[0]['label']=='home_lift'
+    assert check_trial_scene(p,w,dict(posx=native))['path_checked']
+    assert home_matches(w,p[-1]['target_pose'])
+
+
 def test_unknown_low_pose_is_not_guessed_safe():
     w=config()['workcell'];tcp=[426.24,50.,200.,0,180,0]
     with pytest.raises(MeasurementError,match='自|자동'):

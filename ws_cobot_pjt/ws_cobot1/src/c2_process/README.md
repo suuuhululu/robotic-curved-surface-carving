@@ -1,11 +1,18 @@
 # c2_process · 코드·담당자·통합할 공정
 
-> **2026-09-25 entry·HOME 복귀 계획 연결:** `entry_planner.py`가 공용 workcell HOME,
+2026-09-30 PR #99 통합 기준: 최신 `main`의 HMI·PRECHECK IK 재사용·HOME 작업영역
+검사를 유지하고 `main_v11` 측정 복구를 적용했다. 움직이기 전 기준선 실패는
+명령 미전송과 시작점 유지가 확인되면 무이동으로 다시 수집한다. 탐색 뒤 접촉 실패는
+정지 확인·검사된 후퇴를 유지한다. 옆면 8점은 재측정하지 않고 최대 한 이상점을
+제외한 유일한 7점 fit만 허용한다. [점검](../../../../docs/MAIN_V11_AUDIT.md) ·
+[실행환경](../../../../docs/LOCAL_ENVIRONMENT.md).
+
+> **entry·종료 이탈 계획:** `entry_planner.py`가 공용 workcell HOME,
 > 현재 도구 끝 자세·관절, 실측 중심·반지름·윗면, 첫 APPROACH와 승인된
 > `entry_planning` 탐색 범위를 받아 `현재/HOME → 상공 entry → 첫 APPROACH`
 > 후보를 만든다. 실제 IK·관절·J6·J3/J5 특이점·보간 관절 변화·단순 원통
 > 간격 검사를 통과한 후보만 해시로 고정한다. REAL 또는 승인된 entry 활성 prepared 정상 실행은 `PRECHECK →
-> ENTRY → ENGRAVE → RETURN_HOME → FINISH` 순서로 검사된 entry·복귀 계획만 실행한다. 절대 310 mm 값은
+> ENTRY → ENGRAVE → RETRACT → FINISH` 순서로 검사된 entry와 본 경로만 실행한다. 절대 310 mm 값은
 > 코드에 넣지 않았고, REAL은 승인된 `entry_planning` 설정이 없으면 실행 전
 > `NOT_READY`로 거절한다. 공개 ROS 타입과 `c2_path` 경로 계약은 변경하지 않았다.
 
@@ -17,13 +24,17 @@
 
 > **조각 실행기 선택:** 기존 `contact_mode=force_touch`는 접촉 확인 방식, `fixed_depth`는 `engraving.execute_fixed_depth_path`의 단순 경로 방식으로 연결한다(기존 `run_fixed_path_trial` 경로는 wrapper 로 유지). 함수·ROS 계약은 그대로이며, 설정 선택은 검사 전에 확정한다. [호출·교체 방법과 검증 범위](FIXED_PATH_EXECUTION.md)를 확인한다.
 
-> **2026-09-21 사용자 결정 후속:** 드릴 ON은 HMI 수동 체크만 사용하며 공정의 ON bool 검사·확인 대기를 추가하지 않는다. 그리퍼/드릴 명령은 제외하고 장착은 하드웨어 Topic을 관측한다. 사전 검사에서 비홈이면 검사된 홈 이동 후 도착·정지 및 상태 재검사를 수행하고 양초 측정을 호출한다. 아래 과거 역할표의 드릴 확인 대기·운영자 장착 bool 의존은 수정 대상이다. 최신 요구사항·파일별 수정 범위는 [세은님 전달 문서](../../../docs/PROCESS_HANDOFF_20260921.md)를 따른다. 이번 갱신은 문서이며 함수·ROS 타입 변경은 아니다.
+> **운영 확인:** 드릴 ON은 HMI 수동 체크만 사용하며 공정 Action의 센서 bool·전원 명령이 아니다. 그리퍼/드릴 명령은 제외한다. 사전 검사에서 비홈이면 검사된 홈 이동 후 도착·정지와 상태를 다시 확인하고 양초 측정을 호출한다. [9/21 인수인계](../../../docs/PROCESS_HANDOFF_20260921.md)는 당시 변경 기록이다.
+
+> **모션 서비스 응답과 이동 완료:** REAL 배포 프로파일의 `command_response_timeout_s`는 MoveLine/MoveSplineTask 서비스가 명령 접수 결과를 돌려줄 때까지의 제한이고, `completion_timeout_s`는 그 뒤 실제 이동·정착을 확인하는 전체 제한이다. 현재 배포값은 각각 5초와 90초다. 접수 응답이 끝내 불명확하면 같은 모션을 재전송하지 않고 QSTOP과 실제 정지 확인 결과를 `UNKNOWN` 상태와 함께 전달한다.
+> QSTOP의 실제 정지가 확인된 UNKNOWN은 공정 내부의 영구 모션 불명 래치를 만들지 않는다. HMI가 별도 읽기 전용 STANDBY 검사를 통과해 이전 실행과 BIND를 종료한 뒤에만 새 준비를 받을 수 있으며, 실패한 구간을 이어서 실행하지 않는다.
 
 > **준비 Action과 측정:** [양초 측정 함수·Action 연결 안내](WORKPIECE_CALIBRATION.md)를 확인한다. 현재 main은 **HMI → `/c2/prepare_workpiece` → 공정 내부 측정 함수** 흐름과 `MEASURE`·`BIND_SNAPSHOT`을 구현한다. 시험용 Trigger 서비스는 운영 계약으로 사용하지 않는다.
+> 실행 취소 뒤 실제 정지가 `CONFIRMED`이면 같은 양초·고정 상태의 측정/BIND를 유지해 다른 경로를 생성·실행할 수 있다. 정지 미확인 `UNKNOWN`, 제어권·통신 상실 또는 보호정지처럼 측정 상태를 신뢰할 수 없는 경우에만 BIND를 무효화한다.
 
-확인일 **2026-09-25**, GitHub main **`987a3b72b29e7224be62e6bdfa6ab40b744375aa`**(PR #90 병합). main 소스, 담당자 작업 보고, 로컬 초안, 구현 예정 기능을 구분한다. 소스 존재와 HMI부터 실기까지의 통합 완료는 다르다.
+확인일 **2026-09-30**, 통합 기준 **`3d882f6a77777014e1b0534ff36c0ea315b26934`**(PR #99). 코드 존재와 HMI부터 실기까지의 통합 완료는 다르다.
 
-현재 main의 entry 활성 정상 순서는 **준비 확인 → 실제 양초 측정 → 측정 원본·설정 BIND → 실측값으로 3D 경로 생성 → 미리보기 → PRECHECK·ENTRY·최종 관절 검사 → 조각 → 검사된 RETURN_HOME**이다. entry 비활성 prepared 호환 흐름에서는 ENTRY와 RETURN_HOME이 생략될 수 있다. 측정 전에 기준 3D 경로를 만든 뒤 공정에서 다시 옮기던 안은 사용하지 않는다. [전체 구조](../../../docs/SYSTEM_STRUCTURE.md), [계약 v2](../../../docs/INTERFACE_GUIDE.md)을 함께 확인한다.
+현재 main의 entry 활성 정상 순서는 **준비 확인 → 실제 양초 측정 → 측정 원본·설정 BIND → 실측값으로 3D 경로 생성 → 미리보기 → PRECHECK·ENTRY·최종 관절 검사 → 조각·마지막 표면 RETRACT → FINISH**다. 정상 완료 뒤 별도 HOME 복귀는 수행하지 않는다. 측정 전에 기준 3D 경로를 만든 뒤 공정에서 다시 옮기던 안은 사용하지 않는다. [전체 구조](../../../docs/SYSTEM_STRUCTURE.md), [계약 v2](../../../docs/INTERFACE_GUIDE.md)을 함께 확인한다.
 
 **담당자 기준 핵심 흐름: 이시율 측정 → 실측 좌표 전달 → 노홍동 경로 생성 → 김세은 관절 검사 → 이시율 조각.** 대시보드 미리보기는 경로 생성과 관절 검사 사이에 둔다.
 
@@ -40,22 +51,21 @@
 
 ## 코드별 역할·상태
 
-`.py`는 별도 표시가 없으면 `c2_process/` 안의 형제 모듈이다. **main 존재**는 소스 제공 가능, **담당자 보고**는 해당 작업 코드 확인 전, **로컬 초안**은 미병합, **구현 예정**은 아직 없는 기능을 뜻한다.
+`.py`는 별도 표시가 없으면 `c2_process/` 안의 형제 모듈이다. **통합 기준 존재**는 PR #99 코드에 포함됨을 뜻하며 실기 검증 완료와 구분한다.
 
 | 파일 | 담당자 | 역할·대표 함수 | 확인 상태 / 남은 일 |
 | --- | --- | --- | --- |
 | `node.py` | 김세은 | HMI 준비/측정 요청·결과 전달 연결, ExecuteProcess·StopProcess 수신, ProcessState·ProcessEvent 발행 | **main 존재**. prepared REAL 실행에서 entry 계획과 본 실행계획 검사를 연결. HMI→실제 M0609 전체 공정 실기는 별도 검증 필요 |
-| `state_machine.py` | 김세은 | entry 활성 prepared 실행의 `PRECHECK → ENTRY → ENGRAVE → RETURN_HOME → FINISH`, 실패·정지 시 후속 단계 차단 | **main 존재**. entry 비활성·직접 실행 호환 경로와 구분 |
+| `state_machine.py` | 김세은 | entry 활성 prepared 실행의 `PRECHECK → ENTRY → ENGRAVE → RETRACT → FINISH`, 실패·정지 시 후속 단계 차단 | **main 존재**. entry 비활성·직접 실행 호환 경로와 구분 |
 | `preconditions.py` | 김세은 | 측정 전 모드·연결·제어권·현재 위치·고정·TCP/하중 확인. 조각 전 경로/설정·측정 유효성 확인과 관절 검사 호출 | **main 존재**. 측정 전에는 아직 없는 조각 경로를 요구하지 않음 |
-| [robot_adapter.py](c2_process/robot_adapter.py) | 이시율 | `observe()`, `move()`, `move_spline()`, `probe_touch()`, `stop()`, `inverse_kinematics()`, `inverse_kinematics_candidates()`, `read_force_bias()`, `hold_normal_force_begin()/end()`. 후보 API는 8개 solution space를 모두 조회하고 해 없음과 서비스 실패를 구분한다. 도구 끝↔제어기 TCP·단위 변환, 이동 중 힘·법선 이탈 감시, 이동 시작 재판정(`_verify_start`) | **main 존재**. 후보 조회는 진단 전용이며 `_ik_space`를 변경하지 않는다. 힘 유지 중 MoveSX 수락·순응 상태 보고와 Cartesian solution-space 동일성은 실기 미검증 |
+| [robot_adapter.py](c2_process/robot_adapter.py) | 이시율 | `observe()`, `move()`, `move_spline()`, `probe_touch()`, `stop()`, `inverse_kinematics()`, `inverse_kinematics_candidates()`, `read_force_bias()`, `hold_normal_force_begin()/end()`. 후보 API는 8개 solution space를 모두 조회하고 해 없음과 서비스 실패를 구분한다. 도구 끝↔제어기 TCP·단위 변환, 이동 중 힘·법선 이탈 감시, 이동 시작 재판정(`_verify_start`) | **main 존재**. 모션 서비스 접수 응답 제한은 배포 프로파일에서 설정하며 응답 미확인 모션을 재전송하지 않는다. 후보 조회는 진단 전용이며 `_ik_space`를 변경하지 않는다. 힘 유지 중 MoveSX 수락·순응 상태 보고와 Cartesian solution-space 동일성은 실기 미검증 |
 | [tool_calibration.py](c2_process/tool_calibration.py) | 이시율 | `measure_tool_tip()` 장착 드릴 끝 오프셋 측정, `verify_tool_tip()` 저장 보정 확인 | **main 존재**. 고정 장착 기준을 재사용하며 매번 전체 보정은 첫 통합에서 제외. 기준 변경 시 재확인에 활용. 양초 중심·높이 측정은 신규 모듈 담당 |
 | [joint_check.py](c2_process/joint_check.py) | **김세은** | `check_path_joints()`로 실측 좌표로 생성한 최종 실행계획의 모든 명시 waypoint IK·관절 범위·J6를 검사. 빠른 검사가 관절 한계/IK로 실패할 때만 `candidate_diagnostic_window()`가 실패점 앞뒤 최대 11점을 만들고 `diagnose_path_joint_candidates()`가 8개 space 후보열을 비교한다 | **main 존재**. 다중 후보열은 `DIAGNOSTIC_ONLY`이며 실행 승인에는 기존 단일해 검사만 사용한다. 빠른 검사 성공 시 후보 진단을 생략한다. 명시 waypoint 사이는 entry planner의 표본 검사와 구분되며 전체 연속 충돌 검사는 아님 |
 | [entry_planner.py](c2_process/entry_planner.py) | 이시율 후보 생성·실행, 김세은 공정 검사 연결 | `generate_entry_candidates()`가 실측 윗면 상대 범위에서 상공 후보를 만들고 `plan_entry_path()`가 읽기 전용 IK 검사로 하나를 확정한다. `execute_entry_plan()`은 해시가 일치하는 target만 실행 | **PR #80으로 main 존재**. 단순 원통·도구 선분 간격 검사이며 전체 메시 충돌 검사는 아님. REAL 정책값과 감독하 이동은 별도 승인 필요 |
-| [engraving.py](c2_process/engraving.py) | 이시율 | `execute_path()`로 검사한 동일 경로의 APPROACH/CUT/TRAVEL/RETRACT 실행, 진행·마지막 완료 구간·실패 반환. `cut_contact=normal_force_hold` 프로파일이면 CUT 중 툴 축 힘 유지(순응)+MoveSX 로 표면 추종, `chunk_adaptive`는 묶음 사이 offset 조정. `checked_plan_signature`가 있으면 획별 IK를 반복하지 않음. `return_home()`은 검사형 복귀 함수 | **main 존재**. 허용 법선 범위 안 연속 IK 증명은 미구현(`normal_range_continuity_verified=False`). 검사된 HOME 복귀는 entry가 활성인 prepared 정상 성공 경로에 연결되며, 실패·정지 미확인 뒤 자동 복귀하지 않음 |
-| [workpiece_calibration.py](c2_process/workpiece_calibration.py) | 이시율 | `measure_workpiece(adapter, workcell, profiles, context, on_progress=None)`: 상공 홈 확인 → 윗면·옆면 8점 → 원 맞춤 → 정상 홈 복귀·결과 반환 | **PR #42로 코드 존재**, 홈 처리·실기 오류 수정은 PR #45. 모의 147건 통과. 이전 홈·외곽 종료 버전 실물 연속 2회 완료(270.394/299.295초). 새 홈·종료 복귀는 이동 없는 IK/FK 검사 통과, 전체 실물 재시험 전. 밑면 오프셋 미확인으로 절대 윗면·바닥 Z는 null. [현재 검증 범위](WORKPIECE_CALIBRATION.md) |
-| `motion_guard.py`, `moving_contact.py` **내부 보조 후보** | 이시율 | 이동 시작/완료·정지 관측, 이동 중 힘 기준·접촉 판정 | **로컬 초안**, main 없음. 어댑터 내부 보조로 통합할지 결정. 세은의 직접 호출 대상·새 노드가 아님 |
-| `config/workcell.yaml` | 이시율 작성, 노홍동 기하 대조, 김세은 로딩 | 기준 형상·좌표계·작업/제외 영역·기준선과 실측 스냅샷 참조 | main 실행 YAML 없음. 실측 좌표는 홍동의 경로 생성 입력으로 전달. 고정 기준과 작업별 측정 기록 분리 |
-| `config/tools.yaml` | 이시율 값·근거 제공, 김세은 로딩·공정 연결 | 재사용 드릴 오프셋·TCP·하중·이동/접촉/가공/정지 프로파일·장착 확인·열기 금지 | main 실행 YAML 없음. 실기 사용값·모의값·미확정값을 구분해 우선 전달하고 SIMULATION 연결부터 확인 |
+| [engraving.py](c2_process/engraving.py) | 이시율 | `execute_path()`로 검사한 동일 경로의 APPROACH/CUT/TRAVEL/RETRACT 실행, 진행·마지막 완료 구간·실패 반환. `cut_contact=normal_force_hold` 프로파일이면 CUT 중 툴 축 힘 유지(순응)+MoveSX 로 표면 추종, `chunk_adaptive`는 묶음 사이 offset 조정. `checked_plan_signature`가 있으면 획별 IK를 반복하지 않음 | **main 존재**. 허용 법선 범위 안 연속 IK 증명은 미구현(`normal_range_continuity_verified=False`). 정상 종료는 마지막 획의 방사선 방향 RETRACT까지만 수행하며 HOME 복귀를 실행하지 않음 |
+| [workpiece_calibration.py](c2_process/workpiece_calibration.py) | 이시율 | `measure_workpiece(adapter, workcell, profiles, context, on_progress=None)`: 상공 홈 확인 → 윗면·옆면 8점 → 원 맞춤 → 정상 홈 복귀·결과 반환 | **통합 기준 존재**. 움직이기 전 기준선 재수집, 탐색 뒤 제한 후퇴 재시도, 한 점 제외 fit을 모의 검증. PR #99 코드의 실제 M0609 반복 검증은 별도 |
+| `config/workpiece_real_trial_0921.json` | 이시율 작성, 김세은 로딩 | REAL 측정·관측·접촉·복구 정책 | **통합 기준 존재**. 현장 배포 전 장치·양초 조건과 재대조 |
+| `config/real_execution_profile_20260923.json` | 공정·경로 공동 | 속도·깊이·관절·작업영역·entry 실행 정책 | **통합 기준 존재**. 양초 기하는 매 MEASURE 스냅샷으로 대체. HOME 복귀 설정은 현행 실행에서 사용하지 않음 |
 | `package.xml`, `setup.py`, `setup.cfg`, `resource/c2_process` | 김세은 | ROS 패키지·entry point·설정 설치·공정 노드 기동 | **main 존재**. `process_controller_node`, `real_preparation_node`, `real_process_node`, `virtual_cell_node` entry point 제공. `launch/process.launch.py`는 없음 |
 | `test/test_*_mock.py`, `test/real_*_check.py` | 기능 담당자별 작성, 이시율 실기 협업 | 어댑터·보정·관절·조각 모의 검사와 별도 실기 확인 | main 소스 존재. 시험 파일 존재만으로 실기 통과를 뜻하지 않음 |
 
@@ -77,7 +87,6 @@
 - **필수 추가 모듈:** `workpiece_calibration.py` 하나. 실제 양초 중심·높이 등 좌표를 측정해 전달한다. 첫 통합은 수직 원통 가정을 명시하고 중심·높이 연결부터 구현한다. 정밀 기울기·테이퍼 측정은 후속으로 미루며, 가정을 실측값처럼 반환하지 않는다.
 - **이전 제안에서 제외:** `prepared_path.py`로 이미 생성된 3D 경로 전체를 실측 위치에 맞춰 다시 옮기는 작업은 하지 않는다. 노홍동이 이시율의 실측 좌표로 처음부터 3D 경로를 생성하므로 이 단계가 불필요하다. 기존 로컬 `prepare_fixed_depth()` 실험 파일은 삭제하지 않으며, 그 파일의 깊이 계산과 제외한 중심 재이동 역할은 구별한다.
 - **기존 파일의 남은 작업:** 어댑터 동작 판정·도구 보정 유효성·설정 제공·취소/정지·검사된 경로 실행 연결은 필요하다. 새 파일 하나만 만들면 전체 통합이 완료된다는 뜻은 아니다.
-- **내부 구현 후보:** `motion_guard.py`·`moving_contact.py`는 어댑터 보조로 사용한다. 파일 수와 노드 수는 다르다.
 - **범위 제외:** 자동 집기·반납·청소, `gripper_adapter.py`·`tool_sequence.py`·별도 그리퍼 노드. 실패 후 자동 홈 복귀도 기본 동작으로 넣지 않는다.
 
 ## 실행 순서와 함수/통신 경계
@@ -90,10 +99,10 @@
 6. **`PRECHECK`**: 공정이 현재 상태와 모든 자산 바이트/해시를 확인한다. `entry_planner.py`가 실측 기하와 승인 정책으로 현재/HOME→상공 entry→첫 APPROACH 후보를 검사·해시 고정하고, 본 실행계획의 모든 명시 waypoint를 `check_path_joints()`로 검사한다.
 7. **`ENTRY`**: `execute_entry_plan()`이 검사·고정된 entry만 실행한다. 실행 중 후보를 다시 탐색하지 않는다.
 8. **`ENGRAVE`**: `execute_path()`가 검사한 동일 본 계획으로 조각한다. 양초 중심을 다시 옮기거나 깊이를 이중 적용하지 않는다.
-9. **`RETURN_HOME`**: PRECHECK에서 실측 기하로 검사·고정한 동일 HOME 복귀 계획만 실행한다. 측정 접근 전용 `trial_scene` TCP 상자는 복귀 작업영역으로 재사용하지 않고, `engraving_workspace`와 받침대·양초·도구/그리퍼 형상 검사를 적용한다. 모든 후보가 정적 형상에서 실패하면 본 경로 IK 전에 거절 사유를 기록한다. 실패·취소·정지 미확인 뒤에는 진입하지 않는다.
-10. **`FINISH`·정지 결과**: 정상 복귀까지 확인한 결과를 Action·`/c2/process_state`·`/c2/process_events`로 전달한다. `/c2/stop_process` 접수와 실제 정지 완료를 구별한다.
+9. **마지막 `RETRACT`**: 좌표 노드가 만든 마지막 획의 `RETRACT`를 실행해 표면 법선 바깥 방향의 오프셋 원통까지 이탈한다. 이 구간도 본 실행계획의 관절 검사에 포함한다. 별도 HOME 복귀 후보 생성·관절 검사·모션은 수행하지 않는다.
+10. **`FINISH`·정지 결과**: 마지막 표면 이탈까지 확인한 결과를 Action·`/c2/process_state`·`/c2/process_events`로 전달한다. `/c2/stop_process` 접수와 실제 정지 완료를 구별한다.
 
-`return_home()`은 entry가 활성인 prepared 정상 성공 경로에 검사된 계획으로 연결된다. 실패·보호정지·정지 미확인 뒤에는 무조건 후퇴/HOME 명령을 보내지 않는다.
+실패·보호정지·정지 미확인 뒤에는 추가 후퇴나 HOME 명령을 보내지 않는다. 정상 성공 때만 경로에 이미 들어 있는 마지막 `RETRACT`를 실행한다.
 
 ### 측정 결과 전달 최소 항목 · 현재 계약
 
@@ -106,6 +115,9 @@
 
 - **도구와 양초는 별개다.** `measure_tool_tip()`은 알려진 축/반지름으로 드릴 돌출을 구한다. 양초가 움직였다고 도구 오프셋까지 동시에 바꾸면 두 오차를 혼동한다. 신뢰할 도구 기준과 충분한 측정 방향·높이·잔차 검증이 필요하다. 한 면 접촉으로 전체 3D 축을 측정했다고 표시하지 않는다.
 - **실측값을 경로 생성 입력으로 사용한다.** 이시율은 양초 좌표를 측정하고 노홍동은 그 스냅샷으로 3D 위치·자세·법선을 계산한다. 기준 중심과 현장 중심 차이 자체는 오류가 아니다. 반지름 변화·기울기를 지원한다면 매핑·검증·미리보기에 같은 형상 모델을 사용한다.
+- 현장 설정의 `fit_outlier_max_exclusions=1`은 8점 원 맞춤이 기준을 넘으면 1점씩 제외한 후보 중 잔차가 가장 작은 7점 조합을 사용한다.
+  후보 유일성이나 추가 품질 판정으로 다시 차단하지 않는다. FIT 단계의 이전 점 재방문·재측정은 없으며 원본 접촉과 제외 번호를 보존한다.
+  [변경·실측 재계산·적용 기록](../../../docs/validation/2026-09-29-fit-exclusion-no-remeasurement.md)을 참조한다.
 - **불변 데이터:** 측정 세션→양초/도구/설정 스냅샷→이미지·배치→생성 경로→실행·검사 결과를 ID·버전·SHA-256으로 연결한다. 경로가 없는 `PrepareWorkpiece`와 유효한 경로 ID를 요구하는 `ExecuteProcess`는 별도 Action이다. HMI의 최종 표시·검사·실행은 같은 최종 경로를 사용한다. 서로 다른 내용에 같은 해시를 붙이지 않는다. 로컬 객체 해시와 파일 바이트 해시도 구분한다.
 - **깊이:** 깊이를 경로 생성에 반영할지 별도 준비 단계에서 반영할지는 노홍동·이시율·김세은이 한 곳으로 합의한다. 미리보기·최종 관절 검사 이전에 깊이와 접근/이탈을 확정하고 조각 중 중복 적용하지 않는다. 표면 실측+명시 깊이가 기준이고 힘은 접촉·이상 감시 자료다. 힘만으로 실제 홈 깊이를 확정하거나 힘 부족 때 무제한 진입하지 않는다. 가공 중 깊이 조절은 허용 범위의 관절·이동 검사 이후에만 통합한다.
 - **실기 근거:** 9/20 별도 시험 실행기로 첫 하트를 실행했고 사용자가 전체가 이어져 새겨졌다고 확인했다. 당시 모델상 깊이는 0.3 mm다. main 상태 기계 통합·반복 중심 측정·실제 0.5±0.3 mm 깊이 달성의 증거는 아니며 물리적 깊이는 미측정이다.

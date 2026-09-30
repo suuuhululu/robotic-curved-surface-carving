@@ -240,7 +240,7 @@ class MockPeer:
             await self.emit('mock_execution_preview',deepcopy(evidence))
         await self.emit('mock_execution_preview',deepcopy(evidence))
         start=asyncio.get_running_loop().time()
-        phases=['PRECHECK','ENTRY','ENGRAVE','RETURN_HOME','FINISH']
+        phases=['PRECHECK','ENTRY','ENGRAVE','FINISH']
         for phase in phases:
             if self.stop_event.is_set():break
             self.state.update(phase=phase)

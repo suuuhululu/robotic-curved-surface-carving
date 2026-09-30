@@ -2,7 +2,7 @@
 
 두산 M0609와 2점 그리퍼에 철사로 고정한 `engraving_drill`을 사용하는 양초 원통 조각 프로젝트다. ROS 2 기준은 Jazzy다. 운영자 화면에서 **양초 준비·측정 → 실측 스냅샷 연결 → 이미지 경로 생성·미리보기 → 별도 실행 요청 → 검사·조각·결과 기록** 순서로 작업한다. 그리퍼 열기, 자동 집기·반납·청소는 현재 공정에 없다.
 
-> **현재 코드 기준:** 2026-09-23 원격 `main` `6536a29`(PR #75). 문서의 날짜가 이보다 오래되면 당시의 작업·시험 기록으로 읽는다. 최신 원격과 설치 PC의 빌드·설정은 실제 작업 전에 다시 확인한다. [현황](docs/REVIEW_STATUS.md) · [21일 일지](ws_cobot_pjt/docs/daily/2026-09-21.md) · [22일 일지](ws_cobot_pjt/docs/daily/2026-09-22.md)
+> **통합 기준:** 2026-09-30 [PR #99](https://github.com/suuuhululu/C-2/pull/99) head `3d882f6` (`origin/main` `d17a2f6` + `main_v11` `1c956f7`). 두 PR이 병합되기 전에는 원격 `main`과 구분한다. [현황](docs/REVIEW_STATUS.md) · [저장소 점검](docs/MAIN_V11_AUDIT.md) · [로컬 환경](docs/LOCAL_ENVIRONMENT.md)
 
 ## 구성
 
@@ -52,8 +52,9 @@ python3 ws_cobot_pjt/run_monitor.py
 ## 문서 사용 순서
 
 1. [현재 현황](docs/REVIEW_STATUS.md) — 코드로 확인되는 기능과 남은 현장 검증.
-2. [문서 길잡이](ws_cobot_pjt/docs/README.md), [시스템 구조](ws_cobot_pjt/docs/SYSTEM_STRUCTURE.md), [작업 흐름](ws_cobot_pjt/docs/INTERFACE_GUIDE.md), [인터페이스](ws_cobot_pjt/docs/INTERFACE_RECOMMENDATION.md) — 팀 간 경계.
-3. 각 패키지 README와 [ROS 실행 안내](ws_cobot_pjt/ws_cobot1/doc/README.md) — 코드·설정·실행 진입점.
-4. `ws_cobot_pjt/docs/daily/`, `validation/`, `evidence/`와 날짜가 붙은 시험 문서 — **그 날짜·커밋의 근거**. 현재 운영값이나 구현 상태의 우선 출처로 사용하지 않는다.
+2. [main_v11 점검](docs/MAIN_V11_AUDIT.md), [로컬 실행환경](docs/LOCAL_ENVIRONMENT.md) — 통합 결정, GitHub 미결 항목, 백엔드·두산 드라이버 구성.
+3. [문서 길잡이](ws_cobot_pjt/docs/README.md), [시스템 구조](ws_cobot_pjt/docs/SYSTEM_STRUCTURE.md), [작업 흐름](ws_cobot_pjt/docs/INTERFACE_GUIDE.md), [인터페이스](ws_cobot_pjt/docs/INTERFACE_RECOMMENDATION.md) — 팀 간 경계.
+4. 각 패키지 README와 [ROS 실행 안내](ws_cobot_pjt/ws_cobot1/doc/README.md) — 코드·설정·실행 진입점.
+5. `ws_cobot_pjt/docs/daily/`, `validation/`, `evidence/`와 날짜가 붙은 시험 문서 — **그 날짜·커밋의 근거**. 현재 운영값이나 구현 상태의 우선 출처로 사용하지 않는다.
 
 문서와 코드가 다르면 기준 커밋의 실제 타입·진입점·설정 검사를 확인한다. 팀 규칙은 [AGENTS.md](AGENTS.md), 외부 실행환경은 [의존성 기록](docs/DEPENDENCIES.md)을 따른다.
