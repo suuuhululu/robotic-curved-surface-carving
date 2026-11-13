@@ -1,8 +1,10 @@
 
 # 새김 (Saegim)
+
 https://github.com/user-attachments/assets/fc9fabf6-7cc6-4f2d-bc93-c86c8ff6c622
 
 **이미지 한 장을 실측한 원통 곡면의 조각 경로로 바꿔, 협동로봇이 양초에 새기는 음각 조각 자동화 시스템**
+
 접촉 측정, 이미지에서 경로를 만드는 과정, 운영 화면, 실제 조각과 결과까지 담았습니다(1분 48초).
 
 <p align="center">
